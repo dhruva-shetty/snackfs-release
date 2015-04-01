@@ -118,7 +118,7 @@ object SnackfsBuild extends Build {
     
     resolvers += "Spray Repository" at " http://repo.spray.cc/",
     
-    excludeFilter in unmanagedResources := HiddenFileFilter || "core-site.xml" || "cassandra.yaml"
+    excludeFilter in unmanagedResources := HiddenFileFilter || "core-site.xml"
   )
 
   lazy val snackfs = Project(
@@ -167,7 +167,6 @@ object SnackfsBuild extends Build {
       serverBin.setExecutable(true, false)
       
       IO.copyFile(new File("src/main/resources/core-site.xml"), new File(conf + "core-site.xml"))
-      IO.copyFile(new File("src/main/resources/cassandra.yaml"), new File(conf + "cassandra.yaml"))
 
       val jarFiles = IO.listFiles(new File(lib))
       val configFiles = IO.listFiles(new File(conf))
