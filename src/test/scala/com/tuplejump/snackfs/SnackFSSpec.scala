@@ -26,7 +26,10 @@ import org.apache.hadoop.fs.Path
 import java.io.{FileNotFoundException, IOException}
 import java.util.Date
 import org.apache.commons.lang3.RandomStringUtils
+import org.scalatest.junit.JUnitRunner
+import org.junit.runner.RunWith
 
+@RunWith(classOf[JUnitRunner])
 class SnackFSSpec extends FlatSpec with BeforeAndAfterAll with MustMatchers {
 
   val isTrue = true
@@ -105,7 +108,7 @@ class SnackFSSpec extends FlatSpec with BeforeAndAfterAll with MustMatchers {
     val status = fs.getFileStatus(path)
     !status.isDir must be(isTrue)
     status.getLen must be(12)
-    status.getPath must be(path)
+    status.getPath.getName must be(path.getName)
   }
 
   /* it should "get file block locations" in {
@@ -173,17 +176,17 @@ class SnackFSSpec extends FlatSpec with BeforeAndAfterAll with MustMatchers {
     val exception1 = intercept[FileNotFoundException] {
       fs.getFileStatus(dirPath2)
     }
-    exception1.getMessage must be("No such file exists")
+    exception1.getMessage must be("No such file exists: " + dirPath2)
 
     val exception2 = intercept[FileNotFoundException] {
       fs.getFileStatus(filePath2)
     }
-    exception2.getMessage must be("No such file exists")
+    exception2.getMessage must be("No such file exists: " + filePath2)
 
     val exception3 = intercept[FileNotFoundException] {
       fs.getFileStatus(baseDirPath)
     }
-    exception3.getMessage must be("No such file exists")
+    exception3.getMessage must be("No such file exists: " + baseDirPath)
 
   }
 
@@ -202,7 +205,7 @@ class SnackFSSpec extends FlatSpec with BeforeAndAfterAll with MustMatchers {
     val exception2 = intercept[FileNotFoundException] {
       fs.getFileStatus(filePath1)
     }
-    exception2.getMessage must be("No such file exists")
+    exception2.getMessage must be("No such file exists: " + filePath1)
 
     val fileStatus = fs.getFileStatus(filePath2)
     !fileStatus.isDir must be(isTrue)

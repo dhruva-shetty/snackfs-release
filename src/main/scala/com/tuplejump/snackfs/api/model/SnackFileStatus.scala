@@ -18,35 +18,49 @@
  */
 package com.tuplejump.snackfs.api.model
 
+import org.apache.hadoop.fs.FileStatus
+import org.apache.hadoop.fs.Path
+
 import com.tuplejump.snackfs.fs.model.INode
-import org.apache.hadoop.fs.{FileStatus, Path}
+import com.twitter.logging.Logger
+
+object SnackFileStatus {
+  
+  private lazy val log = Logger.get(getClass)
+  
+  def getLength(iNode: INode): Long = {
+    var result = 0L
+    try {
+	    if (iNode.isFile) {
+	      result = iNode.blocks.map(_.length).sum
+	    }
+	} catch {
+		case e: Exception => log.error(e, "Failed to read length", iNode)
+	}
+    result
+  }
+  
+  def getBlockSize(iNode: INode): Long = {
+    var result = 0L
+    try {
+	    if (iNode.blocks != null && iNode.blocks.length > 0) {
+	      result = iNode.blocks(0).length
+	    }
+    } catch {
+      	case e: Exception => log.error(e, "Failed to read blockSize", iNode)
+    }
+    result
+ }
+}
 
 case class SnackFileStatus(iNode: INode, path: Path) extends FileStatus(
-  SnackFileStatusHelper.length(iNode), //length
+  SnackFileStatus.getLength(iNode), //length
   iNode.isDirectory, //isDir
   0, //block_replication
-  SnackFileStatusHelper.blockSize(iNode), //blocksize
+  SnackFileStatus.getBlockSize(iNode), //blocksize
   iNode.timestamp, //modification_time
   0L, //access_time
   iNode.permission,
   iNode.user,
   iNode.group,
   path: Path)
-
-object SnackFileStatusHelper {
-  def length(iNode: INode): Long = {
-    var result = 0L
-    if (iNode.isFile) {
-      result = iNode.blocks.map(_.length).sum
-    }
-    result
-  }
-
-  def blockSize(iNode: INode): Long = {
-    var result = 0L
-    if (iNode.blocks != null && iNode.blocks.length > 0) {
-      result = iNode.blocks(0).length
-    }
-    result
-  }
-}

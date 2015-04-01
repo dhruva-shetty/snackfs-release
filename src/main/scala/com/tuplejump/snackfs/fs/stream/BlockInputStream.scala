@@ -18,26 +18,38 @@
  */
 package com.tuplejump.snackfs.fs.stream
 
-import java.io.{IOException, InputStream}
-import scala.concurrent.Await
-import scala.concurrent.duration._
-import com.twitter.logging.Logger
-import com.tuplejump.snackfs.fs.model._
-import com.tuplejump.snackfs.cassandra.partial.FileSystemStore
+import java.io.IOException
+import java.io.InputStream
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
-case class
-BlockInputStream(store: FileSystemStore, blockMeta: BlockMeta, atMost: FiniteDuration) extends InputStream {
+import scala.collection.JavaConversions.mapAsScalaConcurrentMap
+import scala.collection.mutable.Map
+import scala.compat.Platform
+import scala.concurrent.Await
+import scala.concurrent.duration.FiniteDuration
+
+import org.apache.cassandra.io.sstable.SSTableReader
+
+import com.tuplejump.snackfs.cassandra.partial.FileSystemStore
+import com.tuplejump.snackfs.cassandra.sstable.SubBlockData
+import com.tuplejump.snackfs.fs.model.BlockMeta
+import com.tuplejump.snackfs.util.AsyncUtil
+import com.tuplejump.snackfs.util.LogConfiguration
+import com.twitter.logging.Logger
+
+case class BlockInputStream(store: FileSystemStore, blockMeta: BlockMeta, compressed: Boolean, isLocalBlock: Boolean, atMost: FiniteDuration, blockSize: Long, subBlockSize: Long) extends InputStream {
+
   private lazy val log = Logger.get(getClass)
 
   private val LENGTH = blockMeta.length
+  private val blockToSSTableMap: Map[UUID, (String, SSTableReader)] = new ConcurrentHashMap[UUID, (String, SSTableReader)]()
 
   private var isClosed: Boolean = false
   private var inputStream: InputStream = null
   private var currentPosition: Long = 0
-
   private var targetSubBlockSize = 0L
   private var targetSubBlockOffset = 0L
-
 
   private def findSubBlock(targetPosition: Long): InputStream = {
     val subBlockLengthTotals = blockMeta.subBlocks.scanLeft(0L)(_ + _.length).tail
@@ -47,35 +59,68 @@ BlockInputStream(store: FileSystemStore, blockMeta: BlockMeta, atMost: FiniteDur
       log.error(ex, "Position %s could not be located", targetPosition.toString)
       throw ex
     }
-    var offset = targetPosition
-    if (subBlockIndex != 0) {
-      offset -= subBlockLengthTotals(subBlockIndex - 1)
-    }
+
+    val start = Platform.currentTime
+
+    var localFetch = true
     val subBlock = blockMeta.subBlocks(subBlockIndex)
-    targetSubBlockSize = subBlock.length
-    targetSubBlockOffset = subBlock.offset
-    log.debug("fetching subBlock for block %s and position %s", blockMeta.id.toString, targetPosition.toString)
-    Await.result(store.retrieveSubBlock(blockMeta.id, subBlock.id, offset), atMost)
+    var inputStreamToReturn: InputStream = null
+    if (LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " Received request to retrieve blockID: %s and sublockID : %s index %s", blockMeta.id, subBlock.id, subBlockIndex)
+    try {
+      if (isLocalBlock) {
+        try {
+          var data: SubBlockData = null
+          if(store.getRemoteActor != null) {
+            inputStreamToReturn = store.getRemoteActor.readSSTable(blockMeta.id, subBlock.id, compressed)
+          } else if(store.getSSTableReader != null) {
+            val data: SubBlockData = store.getSSTableReader.readSSTable(blockToSSTableMap, blockMeta.id, subBlock.id)
+            if(data != null) {
+              inputStreamToReturn = AsyncUtil.convertByteArrayToStream(data.bytes, compressed)
+            }
+          }
+        } catch {
+          case e: Exception =>
+            log.error(e, "Failed to read sstable")
+        }
+      }
+      if (!isLocalBlock || inputStreamToReturn == null) {
+        localFetch = false
+        inputStreamToReturn = Await.result(store.retrieveSubBlock(blockMeta.id, subBlock.id, compressed), atMost)
+      }
+      targetSubBlockSize = subBlock.length
+      targetSubBlockOffset = subBlock.offset
+      inputStreamToReturn
+    } catch {
+      case e: Exception =>
+        log.error(e, "Failed to read inputStream")
+        throw e
+    } finally {
+      log.info(Thread.currentThread.getName() + " Elapsed time to retrieve blockId: %s sblockId: %s is %s ms -> isLocal: %s LocalFetch: %s ", blockMeta.id, blockMeta.subBlocks(subBlockIndex).id, (Platform.currentTime - start), isLocalBlock, localFetch)
+    }
   }
 
   def read: Int = {
     if (isClosed) {
       val ex = new IOException("Stream closed")
-      log.error(ex,"Failed to read as stream is closed")
+      log.error(ex, "Failed to read as stream is closed")
       throw ex
     }
     var result = -1
+    var closeStream = false
     if (currentPosition <= LENGTH - 1) {
-      if (currentPosition > (targetSubBlockOffset + targetSubBlockSize - 1)) {
+      if (currentPosition > (targetSubBlockOffset + targetSubBlockSize - 1) || closeStream) {
         if (inputStream != null) {
           inputStream.close()
+          closeStream = false
         }
-        log.debug("fetching next subblock")
         inputStream = findSubBlock(currentPosition)
       }
-      log.debug("reading from subblock")
       result = inputStream.read()
-      currentPosition += 1
+      if (result == -1) {
+        closeStream = true;
+      } else {
+        currentPosition += 1
+      }
     }
     result
   }
@@ -83,36 +128,40 @@ BlockInputStream(store: FileSystemStore, blockMeta: BlockMeta, atMost: FiniteDur
   override def read(buf: Array[Byte], off: Int, len: Int): Int = {
     if (isClosed) {
       val ex = new IOException("Stream closed")
-      log.error(ex,"Failed to read as stream is closed")
+      log.error(ex, "Failed to read as stream is closed")
       throw ex
     }
     if (buf == null) {
       val ex = new NullPointerException
-      log.error(ex,"Failed to read as output buffer is null")
+      log.error(ex, "Failed to read as output buffer is null")
       throw ex
     }
     if ((off < 0) || (len < 0) || (len > buf.length - off)) {
       val ex = new IndexOutOfBoundsException
-      log.error(ex,"Failed to read as one of offset,length or output buffer length is invalid")
+      log.error(ex, "Failed to read as one of offset,length or output buffer length is invalid")
       throw ex
     }
     var result = 0
     if (len > 0) {
+      var closeStream = false
       while ((result < len) && (currentPosition <= LENGTH - 1)) {
-        if (currentPosition > (targetSubBlockOffset + targetSubBlockSize - 1)) {
+        if (currentPosition > (targetSubBlockOffset + targetSubBlockSize - 1) || closeStream) {
           if (inputStream != null) {
             inputStream.close()
+            closeStream = false
           }
-          log.debug("fetching next subblock")
           inputStream = findSubBlock(currentPosition)
         }
         val remaining = len - result
         val size = math.min(remaining, targetSubBlockSize)
 
-        log.debug("reading from subblock")
         val readSize = inputStream.read(buf, off + result, size.asInstanceOf[Int])
-        result += readSize
-        currentPosition += readSize
+        if (readSize == -1) {
+          closeStream = true;
+        } else {
+          result += readSize
+          currentPosition += readSize
+        }
       }
       if (result == 0) {
         result = -1
@@ -124,10 +173,9 @@ BlockInputStream(store: FileSystemStore, blockMeta: BlockMeta, atMost: FiniteDur
   override def close() = {
     if (!isClosed) {
       if (inputStream != null) {
-        log.debug("closing stream")
-        inputStream.close()
+        inputStream.close
       }
-      super.close()
+      super.close
       isClosed = true
     }
   }

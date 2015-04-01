@@ -19,16 +19,18 @@
 
 package com.tuplejump.snackfs.cassandra.model
 
+import scala.concurrent.Await
+import scala.concurrent.duration.DurationInt
+
+import org.apache.cassandra.thrift.Cassandra.AsyncClient
+import org.apache.cassandra.thrift.Cassandra.AsyncClient.set_keyspace_call
 import org.apache.commons.pool.BasePoolableObjectFactory
 import org.apache.thrift.async.TAsyncClientManager
 import org.apache.thrift.protocol.TBinaryProtocol
-import org.apache.cassandra.thrift.Cassandra.AsyncClient
 import org.apache.thrift.transport.TNonblockingSocket
-import scala.concurrent.Await
-import com.tuplejump.snackfs.util.AsyncUtil
-import org.apache.cassandra.thrift.Cassandra.AsyncClient.set_keyspace_call
-import scala.concurrent.duration._
 
+import com.tuplejump.snackfs.util.AsyncUtil
+import com.tuplejump.snackfs.util.LogConfiguration
 import com.twitter.logging.Logger
 
 class ClientPoolFactory(host: String, port: Int, keyspace: String) extends BasePoolableObjectFactory[ThriftClientAndSocket] {
@@ -45,7 +47,7 @@ class ClientPoolFactory(host: String, port: Int, keyspace: String) extends BaseP
     val x = Await.result(AsyncUtil.executeAsync[set_keyspace_call](client.set_keyspace(keyspace, _)), 10 seconds)
     try {
       x.getResult()
-      log.debug("set keyspace %s for client", keyspace)
+      if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " set keyspace %s for client", keyspace)
       ThriftClientAndSocket(client, transport)
     } catch {
       case e: Exception =>

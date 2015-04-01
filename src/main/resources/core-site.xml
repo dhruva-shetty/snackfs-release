@@ -3,36 +3,44 @@
 
 <configuration>
     <property>
-        <name>snackfs.cassandra.host</name>
-        <value>127.0.0.1</value>
-    </property>
-    <property>
-        <name>snackfs.cassandra.port</name>
-        <value>9160</value>
-    </property>
-    <property>
-        <name>snackfs.consistencyLevel.write</name>
-        <value>QUORUM</value>
-    </property>
-    <property>
-        <name>snackfs.consistencyLevel.read</name>
-        <value>QUORUM</value>
-    </property>
-    <property>
-        <name>snackfs.replicationFactor</name>
-        <value>3</value>
-    </property>
-    <property>
-        <name>snackfs.replicationStrategy</name>
-        <value>org.apache.cassandra.locator.SimpleStrategy</value>
-    </property>
-    <property>
         <name>fs.snackfs.impl</name>
         <value>com.tuplejump.snackfs.SnackFS</value>
     </property>
     <property>
+    	<name>snackfs.cassandra.hosts</name>
+    	<value>127.0.0.1</value>
+    </property>
+    <property>
+        <name>snackfs.cassandra.thrift.port</name>
+        <value>9160</value>
+    </property>
+    <property>
+        <name>snackfs.cassandra.cql.port</name>
+        <value>9042</value>
+    </property>
+    <property>
         <name>snackfs.keyspace</name>
-        <value>snackfs</value>
+        <value>snackfs_cql</value>
+    </property>
+    <property>
+    	<name>sstable.location</name>
+    	<value>/local2/data/cassandra/data/</value>
+  	</property>
+    <property>
+        <name>snackfs.consistencyLevel.write</name>
+        <value>LOCAL_QUORUM</value>
+    </property>
+    <property>
+        <name>snackfs.consistencyLevel.read</name>
+        <value>LOCAL_ONE</value>
+    </property>
+    <property>
+        <name>snackfs.replicationFactor</name>
+        <value>1</value>
+    </property>
+    <property>
+        <name>snackfs.replicationStrategy</name>
+        <value>org.apache.cassandra.locator.SimpleStrategy</value>
     </property>
     <property>
         <name>snackfs.subblock.size</name>
@@ -43,8 +51,36 @@
         <value>134217728</value>
     </property>
     <property>
-        <name>fs.default.name</name>
-        <value>file:///</value>
+	    <name>io.file.buffer.size</name>
+    	<value>134217728</value>
+  	</property>
+    <property>
+        <name>fs.defaultFS</name>
+        <value>snackfs://dev:9042/</value>
     </property>
+    <property>
+    	<name>snackfs.useSSTable</name>
+    	<value>true</value>
+    </property>
+    <property>
+    	<name>snackfs.fileformats.uncompressed</name>
+    	<value>parquet</value>
+    </property>
+    <property>
+    	<name>snackfs.waitInterval</name>
+    	<value>600000</value>
+  	</property>
+  	<property>
+    	<name>snackfs.filelock</name>
+    	<value>false</value>
+  	</property>
+  	<property>
+    	<name>dfs.namenode.acls.enabled</name>
+    	<value>true</value>
+  	</property>
+  	<property>
+    	<name>standalone.mode</name>
+    	<value>true</value>
+  	</property>
 </configuration>
 

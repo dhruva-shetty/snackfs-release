@@ -17,21 +17,29 @@
  */
 package com.tuplejump.snackfs.api.model
 
-import scala.util.{Failure, Success, Try}
-import scala.concurrent.Await
-import com.tuplejump.snackfs.fs.model.INode
 import java.io.IOException
+
+import scala.concurrent.Await
 import scala.concurrent.duration.FiniteDuration
+import scala.util.Failure
+import scala.util.Success
+import scala.util.Try
+
 import org.apache.hadoop.fs.Path
-import com.twitter.logging.Logger
-import com.tuplejump.snackfs.cassandra.partial.FileSystemStore
+
+import com.tuplejump.snackfs.SnackFS
 import com.tuplejump.snackfs.api.partial.Command
+import com.tuplejump.snackfs.cassandra.partial.FileSystemStore
+import com.tuplejump.snackfs.fs.model.INode
+import com.tuplejump.snackfs.util.LogConfiguration
+import com.twitter.logging.Logger
 
 
 object DeleteCommand extends Command {
   private lazy val log = Logger.get(getClass)
 
-  def apply(store: FileSystemStore,
+  def apply(fs: SnackFS,
+            store: FileSystemStore,
             srcPath: Path,
             isRecursive: Boolean,
             atMost: FiniteDuration): Boolean = {
@@ -44,31 +52,31 @@ object DeleteCommand extends Command {
 
       case Success(src: INode) =>
         if (src.isFile) {
-          log.debug("deleting file %s", srcPath)
+          if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " deleting file %s", srcPath)
           Await.ready(store.deleteINode(absolutePath), atMost)
           Await.ready(store.deleteBlocks(src), atMost)
 
         } else {
-          val contents = ListCommand(store, srcPath, atMost)
+          val contents = ListCommand(fs, store, srcPath, atMost)
 
           if (contents.length == 0) {
-            log.debug("deleting directory %s", srcPath)
+            if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " deleting directory %s", srcPath)
             Await.ready(store.deleteINode(absolutePath), atMost)
 
           } else if (!isRecursive) {
             val ex = new IOException("Directory is not empty")
-            log.error(ex, "Failed to delete directory %s as it is not empty", srcPath)
+            log.error(ex, Thread.currentThread.getName() + "Failed to delete directory %s as it is not empty", srcPath)
             throw ex
 
           } else {
-            log.debug("deleting directory %s and all its contents", srcPath)
-            result = contents.map(p => DeleteCommand(store, p.getPath, isRecursive, atMost)).reduce(_ && _)
+            if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " deleting directory %s and all its contents", srcPath)
+            result = contents.map(p => DeleteCommand(fs, store, p.getPath, isRecursive, atMost)).reduce(_ && _)
             Await.ready(store.deleteINode(absolutePath), atMost)
           }
         }
 
       case Failure(e) =>
-        log.debug("failed to delete %s, as it doesn't exist", srcPath)
+        if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " failed to delete %s, as it doesn't exist", srcPath)
         result = false
     }
     result

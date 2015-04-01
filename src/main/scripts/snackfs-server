@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+
+BASE=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
+
+CONF=conf
+
+CONF_DIR=${CONF_DIR:-$BASE/../$CONF}
+
+if [ -z $JAVA_HOME ]; then
+    echo JAVA_HOME is not set, trying to determine it 
+    JAVA_HOME=`$(dirname  $(which java))/..`
+    JAVA_HOME_SET=true
+fi
+
+if [ $JAVA_HOME_SET ]; then
+    echo Java found at $JAVA_HOME
+fi
+
+if [ -z $JAVA_HOME ]; then
+    echo You should install Java and set JAVA_HOME
+    exit
+fi    
+
+JAVA=$JAVA_HOME/bin/java
+JAVA_HEAP_MAX=-Xmx1000m
+
+CLASSPATH="${CONF_DIR}"
+CLASSPATH=${CLASSPATH}:$JAVA_HOME/lib/tools.jar
+
+# add libs to CLASSPATH
+for f in $BASE/../lib/*.jar; do
+  CLASSPATH=${CLASSPATH}:$f;
+done
+
+exec "$JAVA" -Dproc_$COMMAND $JAVA_HEAP_MAX $OPTS -classpath "$CLASSPATH" com.tuplejump.snackfs.server.SnackFSServer "$@"

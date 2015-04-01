@@ -18,39 +18,44 @@
  */
 package com.tuplejump.snackfs.api.model
 
+import scala.concurrent.Await
+import scala.concurrent.duration.FiniteDuration
+import scala.util.Failure
+import scala.util.Success
+import scala.util.Try
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.fs.permission.FsPermission
-import scala.util.{Failure, Success, Try}
-import scala.concurrent.Await
-import com.tuplejump.snackfs.fs.model.{FileType, INode}
-import com.twitter.logging.Logger
-import scala.concurrent.duration.FiniteDuration
-import com.tuplejump.snackfs.cassandra.partial.FileSystemStore
 import com.tuplejump.snackfs.api.partial.Command
+import com.tuplejump.snackfs.cassandra.partial.FileSystemStore
+import com.tuplejump.snackfs.fs.model.FileType
+import com.tuplejump.snackfs.fs.model.INode
+import com.tuplejump.snackfs.util.LogConfiguration
+import com.twitter.logging.Logger
+import com.tuplejump.snackfs.security.UnixGroupsMapping
+import org.apache.hadoop.fs.permission.FsAction
 
 object MakeDirectoryCommand extends Command {
   private lazy val log = Logger.get(getClass)
 
-  private def mkdir(store: FileSystemStore,
-                    filePath: Path,
-                    filePermission: FsPermission,
-                    atMost: FiniteDuration): Boolean = {
-
+  private def mkdir(store: FileSystemStore, filePath: Path,  filePermission: FsPermission, atMost: FiniteDuration): Boolean = {
     val mayBeFile = Try(Await.result(store.retrieveINode(filePath), atMost))
     var result = true
 
     mayBeFile match {
       case Success(file: INode) =>
         if (file.isFile) {
-          log.debug("Failed to make a directory for path %s since its a file", filePath)
+          if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " Failed to make a directory for path %s since its a file", filePath)
           result = false
         }
 
       case Failure(e: Exception) =>
         val user = System.getProperty("user.name")
         val timestamp = System.currentTimeMillis()
-        val iNode = INode(user, user, filePermission, FileType.DIRECTORY, null, timestamp)
-        log.debug("Creating directory for path %s", filePath)
+        val iNode = INode(user, UnixGroupsMapping.getUserGroup(user), filePermission, FileType.DIRECTORY, null, timestamp)
+        if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " Creating directory for path %s", filePath)
+        
+        //we only need to check if we have WRITE permission for the file/directory and it's parent/ancestor
+        store.permissionChecker.checkPermission(filePath, null, FsAction.WRITE, false, checkAncestor = true, false, atMost)
         Await.ready(store.storeINode(filePath, iNode), atMost)
     }
     result
@@ -70,7 +75,7 @@ object MakeDirectoryCommand extends Command {
       absolutePath = absolutePath.getParent
     }
 
-    log.debug("Creating directories for path %s", filePath)
+    if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " Creating directories for path %s", filePath)
     result = paths.map(path => mkdir(store, path, filePermission, atMost)).reduce(_ && _)
     result
   }

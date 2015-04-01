@@ -18,26 +18,26 @@
  */
 package com.tuplejump.snackfs.api.model
 
-import scala.util.{Failure, Success, Try}
-import scala.concurrent.Await
 import java.io.IOException
-import org.apache.hadoop.fs.{Path, FSDataInputStream}
-import com.tuplejump.snackfs.fs.stream.FileSystemInputStream
+import scala.concurrent.Await
 import scala.concurrent.duration.FiniteDuration
-import com.twitter.logging.Logger
+import scala.util.Failure
+import scala.util.Success
+import scala.util.Try
+import org.apache.hadoop.fs.FSDataInputStream
+import org.apache.hadoop.fs.Path
+import com.tuplejump.snackfs.api.partial.Command
 import com.tuplejump.snackfs.cassandra.partial.FileSystemStore
 import com.tuplejump.snackfs.fs.model.INode
-import com.tuplejump.snackfs.api.partial.Command
+import com.tuplejump.snackfs.fs.stream.FileSystemInputStream
+import com.tuplejump.snackfs.util.LogConfiguration
+import com.twitter.logging.Logger
+import org.apache.hadoop.fs.permission.FsAction
 
 object OpenFileCommand extends Command {
   private lazy val log = Logger.get(getClass)
 
-  //TODO check how bufferSize is applied
-  def apply(store: FileSystemStore,
-            filePath: Path,
-            bufferSize: Int,
-            atMost: FiniteDuration): FSDataInputStream = {
-
+  def apply(store: FileSystemStore, filePath: Path, bufferSize: Int, atMost: FiniteDuration): FSDataInputStream = {
     val mayBeFile = Try(Await.result(store.retrieveINode(filePath), atMost))
 
     mayBeFile match {
@@ -48,7 +48,10 @@ object OpenFileCommand extends Command {
           throw ex
 
         } else {
-          log.debug("opening file %s", filePath)
+          if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " opening file %s", filePath)
+          
+          //only check read permission
+          store.permissionChecker.checkPermission(filePath, FsAction.READ, false, checkAncestor = true, false, atMost)
           val fileStream = new FSDataInputStream(FileSystemInputStream(store, filePath))
           fileStream
         }

@@ -24,6 +24,7 @@ import java.io._
 import java.nio.ByteBuffer
 import java.util.UUID
 import com.twitter.logging.Logger
+import com.tuplejump.snackfs.util.LogConfiguration
 
 object FileType extends Enumeration {
   val DIRECTORY, FILE = Value
@@ -40,7 +41,7 @@ case class INode(user: String, group: String, permission: FsPermission,
 
   def serialize: ByteBuffer = {
 
-    log.debug("serializing iNode")
+    if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " serializing iNode")
     // Write INode Header
     val byteStream: ByteArrayOutputStream = new ByteArrayOutputStream
     val outputStream: DataOutputStream = new DataOutputStream(byteStream)
@@ -53,7 +54,7 @@ case class INode(user: String, group: String, permission: FsPermission,
     outputStream.writeByte(fileType.id)
     if (isFile) {
 
-      log.debug("serializing data for file iNode")
+      if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " serializing data for file iNode")
       //Write Blocks
       outputStream.writeInt(blocks.length)
       blocks.foreach(b => {
@@ -99,11 +100,11 @@ object INode {
 
       fType match {
         case FileType.DIRECTORY => {
-          log.debug("deserializing inode directory")
+          if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " deserializing inode directory")
           result = INode(new String(userBuffer), new String(groupBuffer), perms, fType, null, timestamp)
         }
         case FileType.FILE => {
-          log.debug("deserializing data for file")
+          if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " deserializing data for file")
           val blockLength = dataInputStream.readInt
           var fileBlocks: Seq[BlockMeta] = Nil
           val blockRange = 0 until blockLength
@@ -128,6 +129,7 @@ object INode {
             fileBlocks = fileBlocks :+ BlockMeta(new UUID(mostSigBits, leastSigBits), offset, length, subBlocks)
           })
           result = INode(new String(userBuffer), new String(groupBuffer), perms, fType, fileBlocks, timestamp)
+          if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " Done deserialization")
         }
         case _ => {
           val ex = new IllegalArgumentException("Cannot deserialize INode.")

@@ -19,7 +19,6 @@
 package com.tuplejump.snackfs.cassandra.store
 
 import scala.concurrent.Await
-
 import org.scalatest.{BeforeAndAfterAll, FlatSpec}
 import org.apache.hadoop.fs.permission.FsPermission
 import java.util.UUID
@@ -32,25 +31,29 @@ import org.apache.cassandra.thrift.NotFoundException
 import org.apache.hadoop.conf.Configuration
 import com.tuplejump.snackfs.cassandra.model.{SnackFSConfiguration, GenericOpSuccess, Keyspace}
 import com.tuplejump.snackfs.fs.model._
+import org.junit.runner.RunWith
+import org.scalatest.junit.JUnitRunner
+import org.apache.cassandra.utils.UUIDGen
 
-class ThriftStoreSpec extends FlatSpec with BeforeAndAfterAll with MustMatchers {
+@RunWith(classOf[JUnitRunner])
+class CassandraStoreSpec extends FlatSpec with BeforeAndAfterAll with MustMatchers {
 
   val configuration = new Configuration()
-  configuration.set("snackfs.keyspace", "STORE")
+  configuration.set("snackfs.keyspace", "store")
   val snackFSConfiguration = SnackFSConfiguration.get(configuration)
-  val store = new ThriftStore(snackFSConfiguration)
+  val store = new CassandraStore(snackFSConfiguration)
   store.init
 
   val timestamp = System.currentTimeMillis()
-  val subBlocks = List(SubBlockMeta(UUID.randomUUID, 0, 128), SubBlockMeta(UUID.randomUUID, 128, 128))
-  val block1 = BlockMeta(UUID.randomUUID, 0, 256, subBlocks)
-  val block2 = BlockMeta(UUID.randomUUID, 0, 256, subBlocks)
+  val subBlocks = List(SubBlockMeta(UUIDGen.getTimeUUID, 0, 128), SubBlockMeta(UUIDGen.getTimeUUID, 128, 128))
+  val block1 = BlockMeta(UUIDGen.getTimeUUID, 0, 256, subBlocks)
+  val block2 = BlockMeta(UUIDGen.getTimeUUID, 0, 256, subBlocks)
   val blocks = List(block1, block2)
-  val pathURI = URI.create("testFile.txt")
+  val pathURI = URI.create("/testFile.txt")
   val path = new Path(pathURI)
   val iNode = INode("user", "group", FsPermission.getDefault, FileType.FILE, blocks, timestamp)
 
-  val subBlockMeta1 = SubBlockMeta(UUID.randomUUID, 0, 128)
+  val subBlockMeta1 = SubBlockMeta(UUIDGen.getTimeUUID, 0, 128)
   val data = ByteBufferUtil.bytes("Test to store subBLock")
 
   it should "create a keyspace with name STORE" in {
@@ -78,27 +81,27 @@ class ThriftStoreSpec extends FlatSpec with BeforeAndAfterAll with MustMatchers 
   }
 
   it should "fetch created subBlock" in {
-    Await.ready(store.storeSubBlock(block1.id, subBlockMeta1, data), snackFSConfiguration.atMost)
-    val storeResponse = store.retrieveSubBlock(block1.id, subBlockMeta1.id, 0)
+    Await.ready(store.storeSubBlock(block1.id, subBlockMeta1, data, snackFSConfiguration.isCompressed(path)), snackFSConfiguration.atMost)
+    val storeResponse = store.retrieveSubBlock(block1.id, subBlockMeta1.id, snackFSConfiguration.isCompressed(path))
     val response = Await.result(storeResponse, snackFSConfiguration.atMost)
     val responseString = new String(IOUtils.toByteArray(response))
     responseString must be(new String(data.array()))
   }
 
   it should "delete all the blocks of an Inode" in {
-    val blockId = UUID.randomUUID
-    val blockIdSecond = UUID.randomUUID
+    val blockId = UUIDGen.getTimeUUID
+    val blockIdSecond = UUIDGen.getTimeUUID
 
-    val subBlock = SubBlockMeta(UUID.randomUUID, 0, 128)
-    val subBlockSecond = SubBlockMeta(UUID.randomUUID, 0, 128)
+    val subBlock = SubBlockMeta(UUIDGen.getTimeUUID, 0, 128)
+    val subBlockSecond = SubBlockMeta(UUIDGen.getTimeUUID, 0, 128)
 
-    Await.result(store.storeSubBlock(blockId, subBlock, ByteBufferUtil.bytes("Random test data")), snackFSConfiguration.atMost)
-    Await.result(store.storeSubBlock(blockIdSecond, subBlockSecond, ByteBufferUtil.bytes("Random test data")), snackFSConfiguration.atMost)
+    Await.result(store.storeSubBlock(blockId, subBlock, ByteBufferUtil.bytes("Random test data"), snackFSConfiguration.isCompressed(path)), snackFSConfiguration.atMost)
+    Await.result(store.storeSubBlock(blockIdSecond, subBlockSecond, ByteBufferUtil.bytes("Random test data"), snackFSConfiguration.isCompressed(path)), snackFSConfiguration.atMost)
 
     val blockMeta = BlockMeta(blockId, 0, 0, List(subBlock))
-    val blockMetaSecond = BlockMeta(blockId, 0, 0, List(subBlock))
+    val blockMetaSecond = BlockMeta(blockIdSecond, 0, 0, List(subBlockSecond))
 
-    val subBlockData = Await.result(store.retrieveSubBlock(blockMeta.id, subBlock.id, 0), snackFSConfiguration.atMost)
+    val subBlockData = Await.result(store.retrieveSubBlock(blockMeta.id, subBlock.id, snackFSConfiguration.isCompressed(path)), snackFSConfiguration.atMost)
     val dataString = new String(IOUtils.toByteArray(subBlockData))
     dataString must be("Random test data")
 
@@ -107,7 +110,7 @@ class ThriftStoreSpec extends FlatSpec with BeforeAndAfterAll with MustMatchers 
     Await.ready(store.deleteBlocks(iNode), snackFSConfiguration.atMost)
 
     val exception = intercept[NotFoundException] {
-      Await.result(store.retrieveSubBlock(blockMeta.id, subBlock.id, 0), snackFSConfiguration.atMost)
+      Await.result(store.retrieveSubBlock(blockMeta.id, subBlock.id, snackFSConfiguration.isCompressed(path)), snackFSConfiguration.atMost)
     }
     assert(exception.getMessage === null)
   }
@@ -159,27 +162,27 @@ class ThriftStoreSpec extends FlatSpec with BeforeAndAfterAll with MustMatchers 
 
   /* createlock related -- locking a file so that another process cannot write to it*/
   it should "get lock when attempting for a file for the first time" in {
-    val processId = UUID.randomUUID()
+    val processId = UUIDGen.getTimeUUID()
     val lockFuture = store.acquireFileLock(new Path("/testLock1"), processId)
     val result = Await.result(lockFuture, snackFSConfiguration.atMost)
     result must be(true)
   }
 
   it should "not get lock when attempting for a file from another process if lock is not released" in {
-    val processId = UUID.randomUUID()
+    val processId = UUIDGen.getTimeUUID()
 
     val lockFuture = store.acquireFileLock(new Path("/testLock2"), processId)
     val result = Await.result(lockFuture, snackFSConfiguration.atMost)
     result must be(true)
 
-    val processId2 = UUID.randomUUID()
+    val processId2 = UUIDGen.getTimeUUID()
     val lockFuture2 = store.acquireFileLock(new Path("/testLock2"), processId2)
     val result2 = Await.result(lockFuture2, snackFSConfiguration.atMost)
     result2 must be(false)
   }
 
   it should "release lock on which was acquired" in {
-    val processId = UUID.randomUUID()
+    val processId = UUIDGen.getTimeUUID()
     val lockFuture = store.acquireFileLock(new Path("/testLock3"), processId)
     val lockResult = Await.result(lockFuture, snackFSConfiguration.atMost)
     lockResult must be(true)
@@ -190,7 +193,7 @@ class ThriftStoreSpec extends FlatSpec with BeforeAndAfterAll with MustMatchers 
   }
 
   it should "get lock after a process has acquired and released it" in {
-    val processId = UUID.randomUUID()
+    val processId = UUIDGen.getTimeUUID()
 
     val lockFuture = store.acquireFileLock(new Path("/testLock4"), processId )
     val lockResult = Await.result(lockFuture, snackFSConfiguration.atMost)
@@ -200,7 +203,7 @@ class ThriftStoreSpec extends FlatSpec with BeforeAndAfterAll with MustMatchers 
     val releaseResult = Await.result(releaseFuture, snackFSConfiguration.atMost)
     releaseResult must be(true)
 
-    val processId2 = UUID.randomUUID()
+    val processId2 = UUIDGen.getTimeUUID()
     val lockFuture2 = store.acquireFileLock(new Path("/testLock4"), processId2)
     val lockResult2 = Await.result(lockFuture2, snackFSConfiguration.atMost)
     lockResult2 must be(true)

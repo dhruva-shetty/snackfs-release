@@ -18,24 +18,28 @@
  */
 package com.tuplejump.snackfs.api.model
 
-import org.apache.hadoop.fs.Path
-import com.tuplejump.snackfs.fs.model.INode
-import scala.concurrent.Await
-import scala.util.{Success, Failure, Try}
 import java.io.IOException
-import com.twitter.logging.Logger
+import scala.concurrent.Await
 import scala.concurrent.duration.FiniteDuration
+import scala.util.Failure
+import scala.util.Success
+import scala.util.Try
+import org.apache.hadoop.fs.Path
 import org.apache.hadoop.fs.permission.FsPermission
-import com.tuplejump.snackfs.cassandra.partial.FileSystemStore
 import com.tuplejump.snackfs.api.partial.Command
+import com.tuplejump.snackfs.cassandra.partial.FileSystemStore
+import com.tuplejump.snackfs.fs.model.INode
+import com.tuplejump.snackfs.util.LogConfiguration
+import com.twitter.logging.Logger
+import org.apache.hadoop.fs.permission.FsAction
 
 object RenameCommand extends Command {
   private lazy val log = Logger.get(getClass)
 
   private def renameINode(store: FileSystemStore, originalPath: Path, updatedPath: Path, iNode: INode, atMost: FiniteDuration) = {
-    log.debug("deleting existing iNode %s", originalPath)
+    log.info(Thread.currentThread.getName() + " deleting existing iNode %s", originalPath)
     Await.ready(store.deleteINode(originalPath), atMost)
-    log.debug("storing iNode %s", updatedPath)
+    log.info(Thread.currentThread.getName() + " storing iNode %s", updatedPath)
     Await.ready(store.storeINode(updatedPath, iNode), atMost)
   }
 
@@ -43,7 +47,7 @@ object RenameCommand extends Command {
     MakeDirectoryCommand(store, dst, FsPermission.getDefault, atMost)
     val contents = Await.result(store.fetchSubPaths(src, isDeepFetch = true), atMost)
     if (contents.size > 0) {
-      log.debug("renaming all child nodes %s", contents)
+      if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " renaming all child nodes %s", contents)
       val srcPathString = src.toUri.getPath
       val dstPathString = dst.toUri.getPath
       contents.map(path => {
@@ -51,7 +55,7 @@ object RenameCommand extends Command {
         val oldPathString = path.toUri.getPath
         val changedPathString = oldPathString.replaceFirst(srcPathString, dstPathString)
         val changedPath = new Path(changedPathString)
-        log.debug("renaming child node %s to %s", path, changedPath)
+        log.info(Thread.currentThread.getName() + " renaming child node %s to %s", path, changedPath)
         MakeDirectoryCommand(store, changedPath.getParent, FsPermission.getDefault, atMost)
         renameINode(store, path, changedPath, actualINode, atMost)
       })
@@ -81,7 +85,7 @@ object RenameCommand extends Command {
                 log.error(ex, "Failed to rename %s as given destination %s exits", srcPath, dstPath)
                 throw ex
             case Failure(e) =>
-              log.debug("%s does not exist. checking if %s exists", dstPath, dstPath.getParent)
+              if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " %s does not exist. checking if %s exists", dstPath, dstPath.getParent)
               val maybeDstParent = Try(Await.result(store.retrieveINode(dstPath.getParent), atMost))
               maybeDstParent match {
                 case Failure(e2) =>
@@ -94,8 +98,11 @@ object RenameCommand extends Command {
                     log.error(ex, "Failed to rename directory %s as given destination's parent %s is a file", srcPath, dstPath.getParent)
                     throw ex
                   }
+                  
+                  //we only need to check if we have WRITE permission for the file/directory and it's parent/ancestor
+                  store.permissionChecker.checkPermission(srcPath, src, FsAction.WRITE, false, checkAncestor = true, false, atMost)
                   if (src.isDirectory) {
-                    log.debug("renaming directory %s to %s", srcPath, dstPath)
+                    if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " renaming directory %s to %s", srcPath, dstPath)
                     renameDir(store, srcPath, dstPath, atMost)
                   }
                   renameINode(store, srcPath, dstPath, src, atMost)

@@ -18,15 +18,24 @@
  */
 package com.tuplejump.snackfs.cassandra.partial
 
+import java.io.InputStream
+import java.nio.ByteBuffer
+import java.util.UUID
 import scala.concurrent.Future
 import org.apache.hadoop.fs.Path
-import java.util.UUID
-import java.nio.ByteBuffer
-import java.io.InputStream
-import com.tuplejump.snackfs.fs.model._
-import com.tuplejump.snackfs.cassandra.model.{GenericOpSuccess, Keyspace}
+import com.tuplejump.snackfs.cassandra.model.GenericOpSuccess
+import com.tuplejump.snackfs.cassandra.model.Keyspace
+import com.tuplejump.snackfs.fs.model.BlockMeta
+import com.tuplejump.snackfs.fs.model.INode
+import com.tuplejump.snackfs.fs.model.SubBlockMeta
+import com.tuplejump.snackfs.cassandra.model.SnackFSConfiguration
+import com.tuplejump.snackfs.security.FSPermissionChecker
+import com.tuplejump.snackfs.server.SnackFSClient
+import com.tuplejump.snackfs.cassandra.sstable.DirectSSTableReader
 
 trait FileSystemStore {
+  
+  def config: SnackFSConfiguration
 
   def createKeyspace: Future[Keyspace]
 
@@ -36,11 +45,11 @@ trait FileSystemStore {
 
   def retrieveINode(path: Path): Future[INode]
 
-  def storeSubBlock(blockId: UUID, subBlockMeta: SubBlockMeta, data: ByteBuffer): Future[GenericOpSuccess]
+  def storeSubBlock(blockId: UUID, subBlockMeta: SubBlockMeta, data: ByteBuffer, compressed: Boolean): Future[GenericOpSuccess]
 
-  def retrieveSubBlock(blockId: UUID, subBlockId: UUID, byteRangeStart: Long): Future[InputStream]
+  def retrieveSubBlock(blockId: UUID, subBlockId: UUID, compressed: Boolean): Future[InputStream]
 
-  def retrieveBlock(blockMeta: BlockMeta): InputStream
+  def retrieveBlock(blockMeta: BlockMeta, compressed: Boolean, isLocalBlock: Boolean): InputStream
 
   def deleteINode(path: Path): Future[GenericOpSuccess]
 
@@ -53,4 +62,10 @@ trait FileSystemStore {
   def acquireFileLock(path:Path,processId:UUID):Future[Boolean]
 
   def releaseFileLock(path:Path):Future[Boolean]
+  
+  def permissionChecker: FSPermissionChecker
+  
+  def getRemoteActor: SnackFSClient
+  
+  def getSSTableReader: DirectSSTableReader
 }

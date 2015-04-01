@@ -18,20 +18,27 @@
  */
 package com.tuplejump.snackfs.api.model
 
-import scala.concurrent.Await
-import scala.util.{Failure, Success, Try}
 import java.io.IOException
-import org.apache.hadoop.fs.permission.FsPermission
-import com.tuplejump.snackfs.fs.model.{FileType, INode}
-import com.tuplejump.snackfs.fs.stream.FileSystemOutputStream
-import org.apache.hadoop.fs.{Path, FSDataOutputStream}
-import scala.concurrent.duration.FiniteDuration
-import org.apache.hadoop.util.Progressable
 import java.util.UUID
+import scala.concurrent.Await
+import scala.concurrent.duration.FiniteDuration
+import scala.util.Failure
+import scala.util.Success
+import scala.util.Try
+import org.apache.hadoop.fs.FSDataOutputStream
 import org.apache.hadoop.fs.FileSystem.Statistics
-import com.twitter.logging.Logger
-import com.tuplejump.snackfs.cassandra.partial.FileSystemStore
+import org.apache.hadoop.fs.Path
+import org.apache.hadoop.fs.permission.FsPermission
+import org.apache.hadoop.util.Progressable
 import com.tuplejump.snackfs.api.partial.Command
+import com.tuplejump.snackfs.cassandra.partial.FileSystemStore
+import com.tuplejump.snackfs.fs.model.FileType
+import com.tuplejump.snackfs.fs.model.INode
+import com.tuplejump.snackfs.fs.stream.FileSystemOutputStream
+import com.tuplejump.snackfs.util.LogConfiguration
+import com.twitter.logging.Logger
+import com.tuplejump.snackfs.security.UnixGroupsMapping
+import org.apache.hadoop.fs.permission.FsAction
 
 object CreateFileCommand extends Command {
 
@@ -48,27 +55,27 @@ object CreateFileCommand extends Command {
             processId: UUID,
             statistics: Statistics,
             subBlockSize: Long,
-            atMost: FiniteDuration): FSDataOutputStream = {
+            atMost: FiniteDuration,
+            useLocking: Boolean): FSDataOutputStream = {
 
-    val isCreatePossible = Await.result(store.acquireFileLock(filePath, processId), atMost)
+    var isCreatePossible = true; 
+    if(useLocking) {
+      isCreatePossible = Await.result(store.acquireFileLock(filePath, processId), atMost)
+    }
     if (isCreatePossible) {
-
       try {
         val mayBeFile = Try(Await.result(store.retrieveINode(filePath), atMost))
         mayBeFile match {
-
           case Success(file: INode) =>
             if (file.isFile && !overwrite) {
               val ex = new IOException("File exists and cannot be overwritten")
               log.error(ex, "Failed to create file %s as it exists and cannot be overwritten", filePath)
               throw ex
-
             } else if (file.isDirectory) {
               val ex = new IOException("Directory with same name exists")
               log.error(ex, "Failed to create file %s as a directory with that name exists", filePath)
               throw ex
             }
-
           case Failure(e: Exception) =>
             val parentPath = filePath.getParent
 
@@ -76,25 +83,24 @@ object CreateFileCommand extends Command {
               MakeDirectoryCommand(store, parentPath, filePermission, atMost)
             }
         }
-
-        log.debug("creating file %s", filePath)
+        if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " creating file %s", filePath)
+        
         val user = System.getProperty("user.name")
         val permissions = FsPermission.getDefault
         val timestamp = System.currentTimeMillis()
-        val iNode = INode(user, user, permissions, FileType.FILE, List(), timestamp)
-        Await.ready(store.storeINode(filePath, iNode), atMost)
+        val iNode = INode(user, UnixGroupsMapping.getUserGroup(user), permissions, FileType.FILE, List(), timestamp)
+        
+        //we only need to check if we have WRITE permission for the file/directory and it's parent/ancestor
+        store.permissionChecker.checkPermission(filePath, null, FsAction.WRITE, false, checkAncestor = true, false, atMost)
 
+        Await.ready(store.storeINode(filePath, iNode), atMost)
         val fileStream = new FileSystemOutputStream(store, filePath, blockSize, subBlockSize, bufferSize, atMost)
         val fileDataStream = new FSDataOutputStream(fileStream, statistics)
-
         fileDataStream
-      }
-
-      finally {
+      } finally {
         store.releaseFileLock(filePath)
       }
-    }
-    else {
+    } else {
       val ex = new IOException("Acquire lock failure")
       log.error(ex, "Could not get lock on file %s", filePath)
       throw ex

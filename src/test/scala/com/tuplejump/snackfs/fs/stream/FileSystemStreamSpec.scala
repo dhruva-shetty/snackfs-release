@@ -28,23 +28,24 @@ import org.apache.commons.io.IOUtils
 import org.scalatest.matchers.MustMatchers
 import org.apache.cassandra.locator.SimpleStrategy
 import org.apache.hadoop.conf.Configuration
-import com.tuplejump.snackfs.cassandra.store.ThriftStore
+import com.tuplejump.snackfs.cassandra.store.CassandraStore
 import com.tuplejump.snackfs.cassandra.model.SnackFSConfiguration
+import org.scalatest.junit.JUnitRunner
+import org.junit.runner.RunWith
+import com.tuplejump.snackfs.cassandra.store.CassandraStore
 
+@RunWith(classOf[JUnitRunner])
 class FileSystemStreamSpec extends FlatSpec with BeforeAndAfterAll with MustMatchers {
   val configuration = new Configuration()
-  configuration.set("snackfs.keyspace", "STREAM")
+  configuration.set("snackfs.keyspace", "stream")
   val snackFSConfiguration = SnackFSConfiguration.get(configuration)
 
-  val store = new ThriftStore(snackFSConfiguration)
+  val store = new CassandraStore(snackFSConfiguration)
   store.init
-
-  val replicationStrategy = classOf[SimpleStrategy].getCanonicalName
   Await.result(store.createKeyspace, snackFSConfiguration.atMost)
-  //Await.result(store.init, snackFSConfiguration.atMost)
 
   it should "fetch data which is equal to actual data" in {
-    val pathURI = URI.create("outputStream.txt")
+    val pathURI = URI.create("/outputStream.txt")
     val path = new Path(pathURI)
     val dataString: String = "Test Subblock insertion"
     val data = ByteBufferUtil.bytes(dataString)
@@ -57,7 +58,7 @@ class FileSystemStreamSpec extends FlatSpec with BeforeAndAfterAll with MustMatc
     val inode = Await.result(store.retrieveINode(path), snackFSConfiguration.atMost)
     assert(inode.blocks.length === 1)
 
-    val blockData = store.retrieveBlock(inode.blocks(0))
+    val blockData = store.retrieveBlock(inode.blocks(0), store.config.isCompressed(path), false)
     var outBuf: Array[Byte] = new Array[Byte](23)
     blockData.read(outBuf, 0, 23)
     assert(outBuf != null)
@@ -69,7 +70,7 @@ class FileSystemStreamSpec extends FlatSpec with BeforeAndAfterAll with MustMatc
     val data = Files.readAllBytes(nioPath)
 
     //println("file size=" + data.length)
-    val pathURI = URI.create("vsmall.txt")
+    val pathURI = URI.create("/vsmall.txt")
     val path = new Path(pathURI)
     val maxBlockSize = 500
     val maxSubBlockSize = 50
@@ -85,7 +86,7 @@ class FileSystemStreamSpec extends FlatSpec with BeforeAndAfterAll with MustMatc
     var fetchedData: Array[Byte] = new Array[Byte](data.length)
     var offset = 0
     inode.blocks.foreach(block => {
-      val blockData = store.retrieveBlock(block)
+      val blockData = store.retrieveBlock(block, store.config.isCompressed(path), false)
       val source = IOUtils.toByteArray(blockData)
       System.arraycopy(source, 0, fetchedData, offset, source.length)
       blockData.close()
@@ -102,7 +103,7 @@ class FileSystemStreamSpec extends FlatSpec with BeforeAndAfterAll with MustMatc
     val dataString = new java.lang.String(data)
 
     //println("file size=" + data.length)
-    val pathURI = URI.create("small.txt")
+    val pathURI = URI.create("/small.txt")
     val path = new Path(pathURI)
     val maxBlockSize: Int = 30000
     val maxSubBlockSize = 3000
@@ -119,7 +120,7 @@ class FileSystemStreamSpec extends FlatSpec with BeforeAndAfterAll with MustMatc
     var fetchedData: Array[Byte] = Array[Byte]()
     var offset = 0
     inode.blocks.foreach(block => {
-      val blockData = store.retrieveBlock(block)
+      val blockData = store.retrieveBlock(block, store.config.isCompressed(path), false)
       val source = IOUtils.toByteArray(blockData)
       blockData.close()
       fetchedData = fetchedData ++ source
@@ -136,7 +137,7 @@ class FileSystemStreamSpec extends FlatSpec with BeforeAndAfterAll with MustMatc
     val data = Files.readAllBytes(nioPath)
 
     //println("file size=" + data.length)
-    val pathURI = URI.create("vsmall.txt")
+    val pathURI = URI.create("/vsmall.txt")
     val path = new Path(pathURI)
 
     val inode = FileSystemInputStream(store, path)
@@ -153,7 +154,7 @@ class FileSystemStreamSpec extends FlatSpec with BeforeAndAfterAll with MustMatc
     val data = Files.readAllBytes(nioPath)
 
     //println("file size=" + data.length)
-    val pathURI = URI.create("small.txt")
+    val pathURI = URI.create("/small.txt")
     val path = new Path(pathURI)
 
     val inode = FileSystemInputStream(store, path)
@@ -170,7 +171,7 @@ class FileSystemStreamSpec extends FlatSpec with BeforeAndAfterAll with MustMatc
     val data = Files.readAllBytes(nioPath)
 
     //println("file size=" + data.length)
-    val pathURI = URI.create("vsmall.txt")
+    val pathURI = URI.create("/vsmall.txt")
     val path = new Path(pathURI)
 
     val inode = FileSystemInputStream(store, path)
@@ -188,7 +189,7 @@ class FileSystemStreamSpec extends FlatSpec with BeforeAndAfterAll with MustMatc
     val data = Files.readAllBytes(nioPath)
 
     //println("file size=" + data.length)
-    val pathURI = URI.create("vsmall.txt")
+    val pathURI = URI.create("/vsmall.txt")
     val path = new Path(pathURI)
 
     val inode = FileSystemInputStream(store, path)

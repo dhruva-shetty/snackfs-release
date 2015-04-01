@@ -18,32 +18,37 @@
  */
 package com.tuplejump.snackfs.api.model
 
-import scala.concurrent.duration.FiniteDuration
-import scala.util.{Failure, Success, Try}
-import scala.concurrent.Await
-import com.tuplejump.snackfs.fs.model.INode
 import java.io.FileNotFoundException
-import com.twitter.logging.Logger
-import org.apache.hadoop.fs.{FileStatus, Path}
-import com.tuplejump.snackfs.cassandra.partial.FileSystemStore
+
+import scala.concurrent.Await
+import scala.concurrent.duration.FiniteDuration
+import scala.util.Failure
+import scala.util.Success
+import scala.util.Try
+
+import org.apache.hadoop.fs.FileStatus
+import org.apache.hadoop.fs.Path
+
+import com.tuplejump.snackfs.SnackFS
 import com.tuplejump.snackfs.api.partial.Command
+import com.tuplejump.snackfs.cassandra.partial.FileSystemStore
+import com.tuplejump.snackfs.fs.model.INode
+import com.tuplejump.snackfs.util.LogConfiguration
+import com.twitter.logging.Logger
 
 object FileStatusCommand extends Command {
   private lazy val log = Logger.get(getClass)
 
-  def apply(store: FileSystemStore,
-            filePath: Path,
-            atMost: FiniteDuration): FileStatus = {
-
-    log.debug("getting status for %s", filePath)
+  def apply(fs: SnackFS, store: FileSystemStore, filePath: Path, atMost: FiniteDuration): FileStatus = {
     val maybeFile = Try(Await.result(store.retrieveINode(filePath), atMost))
-
     maybeFile match {
-      case Success(file: INode) => SnackFileStatus(file, filePath)
+      case Success(file: INode) =>
+        val absolutePath = fs.resolvePath(new Path(fs.getWorkingDirectory, filePath))
+        if (LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " getting status for %s resolved to %s", filePath, absolutePath)
+        SnackFileStatus(file, absolutePath)
       case Failure(e) =>
-        val ex = new FileNotFoundException("No such file exists")
-        log.error(ex, "Failed to get status for %s as it doesn't exist", filePath)
-        throw ex
+        log.info("No such file exists: %s", filePath)
+        throw new FileNotFoundException("No such file exists: " + filePath)
     }
   }
 }

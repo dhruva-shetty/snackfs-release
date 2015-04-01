@@ -18,21 +18,39 @@
  */
 package com.tuplejump.snackfs
 
+import java.net.InetAddress
 import java.net.URI
+
+import scala.concurrent.Await
+import scala.concurrent.duration.FiniteDuration
+
+import org.apache.cassandra.utils.UUIDGen
+import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.BlockLocation
+import org.apache.hadoop.fs.FSDataInputStream
+import org.apache.hadoop.fs.FSDataOutputStream
+import org.apache.hadoop.fs.FileStatus
+import org.apache.hadoop.fs.FileSystem
+import org.apache.hadoop.fs.Path
+import org.apache.hadoop.fs.permission.FsAction
 import org.apache.hadoop.fs.permission.FsPermission
 import org.apache.hadoop.util.Progressable
-import org.apache.hadoop.conf.Configuration
-import scala.concurrent.Await
-import scala.concurrent.duration._
 
-import org.apache.hadoop.fs._
-import com.twitter.logging.Logger
-import java.util.UUID
-import com.tuplejump.snackfs.api.model._
-import com.tuplejump.snackfs.fs.model.BlockMeta
-import com.tuplejump.snackfs.cassandra.store.ThriftStore
-import com.tuplejump.snackfs.cassandra.partial.FileSystemStore
+import com.tuplejump.snackfs.api.model.AppendFileCommand
+import com.tuplejump.snackfs.api.model.ChmodCommand
+import com.tuplejump.snackfs.api.model.CreateFileCommand
+import com.tuplejump.snackfs.api.model.DeleteCommand
+import com.tuplejump.snackfs.api.model.FileStatusCommand
+import com.tuplejump.snackfs.api.model.ListCommand
+import com.tuplejump.snackfs.api.model.MakeDirectoryCommand
+import com.tuplejump.snackfs.api.model.OpenFileCommand
+import com.tuplejump.snackfs.api.model.RenameCommand
 import com.tuplejump.snackfs.cassandra.model.SnackFSConfiguration
+import com.tuplejump.snackfs.cassandra.partial.FileSystemStore
+import com.tuplejump.snackfs.cassandra.store.CassandraStore
+import com.tuplejump.snackfs.fs.model.BlockMeta
+import com.tuplejump.snackfs.util.LogConfiguration
+import com.twitter.logging.Logger
 
 case class SnackFS() extends FileSystem {
 
@@ -43,38 +61,41 @@ case class SnackFS() extends FileSystem {
   private var subBlockSize: Long = 0L
 
   private var atMost: FiniteDuration = null
+  private var useLocking: Boolean = true
+  private var queryDuration: FiniteDuration = null
   private var store: FileSystemStore = null
   private var customConfiguration: SnackFSConfiguration = _
 
-  val processId = UUID.randomUUID()
+  val processId = UUIDGen.getTimeUUID
 
   override def initialize(uri: URI, configuration: Configuration) = {
-    log.debug("Initializing SnackFs")
+    if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " Initializing SnackFs")
     super.initialize(uri, configuration)
     setConf(configuration)
 
     systemURI = URI.create(uri.getScheme + "://" + uri.getAuthority)
+    if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " SystemUri %s", systemURI)
 
     val directory = new Path("/user", System.getProperty("user.name"))
     currentDirectory = makeQualified(directory)
 
-    log.debug("generating required configuration")
+    if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " generating required configuration")
     customConfiguration = SnackFSConfiguration.get(configuration)
 
-    store = new ThriftStore(customConfiguration)
+    store = new CassandraStore(customConfiguration)
     atMost = customConfiguration.atMost
+    useLocking = customConfiguration.useLocking
+    queryDuration = customConfiguration.queryDuration
     Await.ready(store.createKeyspace, atMost)
     store.init
 
-    log.debug("creating base directory")
+    if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " creating base directory")
     mkdirs(new Path("/"))
 
     subBlockSize = customConfiguration.subBlockSize
   }
 
-  private def makeAbsolute(path: Path): Path = {
-    if (path.isAbsolute) path else new Path(currentDirectory, path)
-  }
+  private def makeAbsolute(path: Path): Path =  if (path.isAbsolute) path else resolvePath(new Path(currentDirectory, path))
 
   def getUri: URI = systemURI
 
@@ -84,71 +105,64 @@ case class SnackFS() extends FileSystem {
 
   def getWorkingDirectory: Path = currentDirectory
 
-  def open(path: Path, bufferSize: Int): FSDataInputStream = {
-    OpenFileCommand(store, path, bufferSize, atMost)
+  def open(path: Path, bufferSize: Int): FSDataInputStream = OpenFileCommand(store, path, bufferSize, atMost)
+
+  def mkdirs(path: Path, permission: FsPermission): Boolean = MakeDirectoryCommand(store, makeAbsolute(path), permission, atMost)
+
+  def create(filePath: Path, permission: FsPermission, overwrite: Boolean, bufferSize: Int, replication: Short, blockSize: Long, progress: Progressable): FSDataOutputStream = {
+    CreateFileCommand(store, filePath, permission, overwrite, bufferSize, replication, blockSize, progress, processId, statistics, subBlockSize, atMost, useLocking)
   }
 
-  def mkdirs(path: Path, permission: FsPermission): Boolean = {
-    val absolutePath = makeAbsolute(path)
-    MakeDirectoryCommand(store, absolutePath, permission, atMost)
-  }
+  override def getDefaultBlockSize: Long = customConfiguration.blockSize
 
-  def create(filePath: Path, permission: FsPermission, overwrite: Boolean,
-             bufferSize: Int, replication: Short, blockSize: Long,
-             progress: Progressable): FSDataOutputStream = {
+  def append(path: Path, bufferSize: Int, progress: Progressable): FSDataOutputStream = AppendFileCommand(store, path, bufferSize, progress, atMost)
 
-    CreateFileCommand(store, filePath, permission, overwrite, bufferSize, replication,
-      blockSize, progress, processId, statistics, subBlockSize, atMost)
-  }
-
-  override def getDefaultBlockSize: Long = {
-    customConfiguration.blockSize
-  }
-
-  def append(path: Path, bufferSize: Int, progress: Progressable): FSDataOutputStream = {
-    AppendFileCommand(store, path, bufferSize, progress, atMost)
-  }
-
-  def getFileStatus(path: Path): FileStatus = {
-    FileStatusCommand(store, path, atMost)
-  }
+  def getFileStatus(path: Path): FileStatus = FileStatusCommand(this, store, makeAbsolute(path), atMost)
 
   def delete(path: Path, isRecursive: Boolean): Boolean = {
-    val absolutePath = makeAbsolute(path)
-    DeleteCommand(store, absolutePath, isRecursive, atMost)
+    //check WRITE permissions before allowing a delete
+    store.permissionChecker.checkPermission(path, FsAction.WRITE, false, false, checkChildren = true, atMost)
+    DeleteCommand(this, store, makeAbsolute(path), isRecursive, queryDuration)
   }
 
-  def rename(src: Path, dst: Path): Boolean = {
-    val srcPath = makeAbsolute(src)
-    val dstPath = makeAbsolute(dst)
-    RenameCommand(store, srcPath, dstPath, atMost)
-  }
+  def rename(src: Path, dst: Path): Boolean = RenameCommand(store, makeAbsolute(src), makeAbsolute(dst), atMost)
 
+  def listStatus(path: Path): Array[FileStatus] = ListCommand(this, store, makeAbsolute(path), queryDuration)
 
-  def listStatus(path: Path): Array[FileStatus] = {
-    val absolutePath = makeAbsolute(path)
-    ListCommand(store, absolutePath, atMost)
-  }
+  override def delete(p1: Path): Boolean = delete(p1, isRecursive = false)
 
-  def delete(p1: Path): Boolean = delete(p1, isRecursive = false)
-
-  def getFileBlockLocations(path: Path, start: Long, len: Long): Array[BlockLocation] = {
-    log.debug("fetching block locations for %s", path)
+  override def getFileBlockLocations(path: Path, start: Long, len: Long): Array[BlockLocation] = {
     val blocks: Map[BlockMeta, List[String]] = Await.result(store.getBlockLocations(path), atMost)
     val locs = blocks.filterNot(x => x._1.offset + x._1.length < start)
     val locsMap = locs.map {
       case (b, ips) =>
         val bl = new BlockLocation()
-        bl.setHosts(ips.toArray)
-        bl.setNames(ips.map(i => "%s:%s".format(i, customConfiguration.CassandraPort)).toArray)
+        bl.setHosts(ips.map(p => InetAddress.getByName(p).getHostName).toArray)
+        bl.setNames(ips.map(i => "%s:%s".format(i, customConfiguration.CassandraThriftPort)).toArray)
         bl.setOffset(b.offset)
         bl.setLength(b.length)
+        if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " Path %s BlockLocation %s ", path, bl)
         bl
     }
     locsMap.toArray
   }
 
   override def getFileBlockLocations(file: FileStatus, start: Long, len: Long): Array[BlockLocation] = {
+    if(LogConfiguration.isDebugEnabled()) log.debug("Retrieve block locations for file %s ", file);
     getFileBlockLocations(file.getPath, start, len)
   }
+  
+  override def resolvePath(p: Path): Path = {
+    checkPath(p)
+    if (p.isAbsolute && p.toUri().getScheme == null && p.toUri().getAuthority == null) {
+      def path = new Path(getUri.getScheme, getUri.getAuthority, p.toUri().getPath)
+      if(LogConfiguration.isDebugEnabled()) log.debug("Received resolve path request %s resolved to %s", p, path);
+      return path
+    }
+    p
+  }
+  
+  def getConfiguration: SnackFSConfiguration = customConfiguration
+  
+  override def setPermission(path: Path, permission: FsPermission) = ChmodCommand(store, path, permission, queryDuration)
 }

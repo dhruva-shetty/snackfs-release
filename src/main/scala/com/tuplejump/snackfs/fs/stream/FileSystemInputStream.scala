@@ -18,34 +18,41 @@
  */
 package com.tuplejump.snackfs.fs.stream
 
-import org.apache.hadoop.fs.{Path, FSInputStream}
-import java.io.{IOException, InputStream}
+import java.io.IOException
+import java.io.InputStream
+
 import scala.concurrent.Await
-import scala.concurrent.duration._
-import com.twitter.logging.Logger
+import scala.concurrent.duration.DurationInt
+
+import org.apache.hadoop.fs.FSInputStream
+import org.apache.hadoop.fs.Path
+
 import com.tuplejump.snackfs.cassandra.partial.FileSystemStore
+import com.tuplejump.snackfs.util.LogConfiguration
+import com.tuplejump.snackfs.util.NetworkHostUtil
+import com.twitter.logging.Logger
 
 case class FileSystemInputStream(store: FileSystemStore, path: Path) extends FSInputStream {
 
   private lazy val log = Logger.get(getClass)
 
-  private val INODE = Await.result(store.retrieveINode(path), 10 seconds)
+  private val inodeFuture = store.retrieveINode(path)
+  private val blockLocationFuture = store.getBlockLocations(path)
+  private val INODE = Await.result(inodeFuture, 30 seconds)
   private val FILE_LENGTH: Long = INODE.blocks.map(_.length).sum
-
-  private var currentPosition: Long = 0L
+  private val BLOCK_LOCATIONS = Await.result(blockLocationFuture, 30 seconds)
+  private val compressed = store.config.isCompressed(path)
 
   private var blockStream: InputStream = null
-
+  private var currentPosition: Long = 0L
   private var currentBlockSize: Long = -1
-
   private var currentBlockOffset: Long = 0
-
   private var isClosed: Boolean = false
 
   def seek(target: Long) = {
     if (target > FILE_LENGTH) {
-      val ex = new IOException("Cannot seek after EOF")
-      log.error(ex, "EOF reached earlier")
+      val ex = new IOException("Cannot seek after EOF: " + path + " length: " + FILE_LENGTH + " target: " + target)
+      log.error(ex, "EOF reached earlier: " + path + " length: " + FILE_LENGTH + " target: " + target)
       throw ex
     }
     currentPosition = target
@@ -60,19 +67,36 @@ case class FileSystemInputStream(store: FileSystemStore, path: Path) extends FSI
   private def findBlock(targetPosition: Long): InputStream = {
     val blockIndex = INODE.blocks.indexWhere(b => b.offset + b.length > targetPosition)
     if (blockIndex == -1) {
-      val ex = new IOException("Impossible situation: could not find position " + targetPosition)
-      log.error(ex, "Position %s could not be located", targetPosition.toString)
+      val ex = new IOException("Impossible situation: could not find position " + targetPosition + " file length " + FILE_LENGTH)
+      log.error(ex, "Position %s could not be located, file length %s", targetPosition.toString, FILE_LENGTH)
       throw ex
     }
+    
     val block = INODE.blocks(blockIndex)
     currentBlockSize = block.length
     currentBlockOffset = block.offset
 
     val offset = targetPosition - currentBlockOffset
-    log.debug("fetching block at position %s", targetPosition.toString)
-    val bis = store.retrieveBlock(block)
-    bis.skip(offset)
-    bis
+    val localHostLocation = NetworkHostUtil.getHostAddress
+    var isLocalBlock = false
+    for (hostLocations <- BLOCK_LOCATIONS.get(block) if !isLocalBlock) {
+      for(hostLocation <- hostLocations if (hostLocation.equals(localHostLocation) && !isLocalBlock) ) {
+        if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " Block location identified to be local - will be using sstables on %s", localHostLocation)
+        isLocalBlock = true
+      }
+    }
+    if(!isLocalBlock) {
+      if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " Localhost %s, Block ID %s, BlockHosts %s", localHostLocation, block.id, BLOCK_LOCATIONS.get(block))
+    }
+    try {
+      val bis = store.retrieveBlock(block, compressed, isLocalBlock)
+      bis.skip(offset)
+      bis
+    } catch {
+      case e: Exception =>
+        log.error(e, "Failed to retrieve file %s", path)
+        throw e
+    }
   }
 
   def read(): Int = {
@@ -82,18 +106,19 @@ case class FileSystemInputStream(store: FileSystemStore, path: Path) extends FSI
       throw ex
     }
     var result: Int = -1
-
+    var closeStream = false
     if (currentPosition < FILE_LENGTH) {
-      if (currentPosition > currentBlockOffset + currentBlockSize) {
+      if ((currentPosition > currentBlockOffset + currentBlockSize) || closeStream) {
         if (blockStream != null) {
           blockStream.close()
+          closeStream = false
         }
-        log.debug("fetching next block")
         blockStream = findBlock(currentPosition)
       }
-      log.debug("reading from block")
       result = blockStream.read
-      if (result >= 0) {
+      if(result == -1) {
+          closeStream = true;
+      } else {
         currentPosition += 1
       }
     }
@@ -120,21 +145,24 @@ case class FileSystemInputStream(store: FileSystemStore, path: Path) extends FSI
     }
 
     var result: Int = 0
+    var closeStream = false
     if (len > 0) {
-      while ((result < len) && (currentPosition <= FILE_LENGTH - 1)) {
+      while ((result < len) && (currentPosition <= FILE_LENGTH - 1) || closeStream) {
         if (currentPosition > currentBlockOffset + currentBlockSize - 1) {
-
           if (blockStream != null) {
             blockStream.close()
+            closeStream = false
           }
-          log.debug("fetching next block")
           blockStream = findBlock(currentPosition)
         }
         val realLen: Int = math.min(len - result, currentBlockSize + 1).asInstanceOf[Int]
-        log.debug("reading from block")
         var readSize = blockStream.read(buf, off + result, realLen)
-        result += readSize
-        currentPosition += readSize
+        if(readSize == -1) {
+          closeStream = true;
+        } else {
+          result += readSize
+          currentPosition += readSize
+        }
       }
       if (result == 0) {
         result = -1
@@ -146,10 +174,9 @@ case class FileSystemInputStream(store: FileSystemStore, path: Path) extends FSI
   override def close() = {
     if (!isClosed) {
       if (blockStream != null) {
-        log.debug("closing stream")
-        blockStream.close()
+        blockStream.close
       }
-      super.close()
+      super.close
       isClosed = true
     }
   }

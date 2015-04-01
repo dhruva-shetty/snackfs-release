@@ -18,13 +18,17 @@
  */
 package com.tuplejump.snackfs.api.model
 
-import scala.concurrent.duration.FiniteDuration
 import java.io.IOException
-import org.apache.hadoop.fs.{FSDataOutputStream, Path}
+
+import scala.concurrent.duration.FiniteDuration
+
+import org.apache.hadoop.fs.FSDataOutputStream
+import org.apache.hadoop.fs.Path
 import org.apache.hadoop.util.Progressable
-import com.twitter.logging.Logger
-import com.tuplejump.snackfs.cassandra.partial.FileSystemStore
+
 import com.tuplejump.snackfs.api.partial.Command
+import com.tuplejump.snackfs.cassandra.partial.FileSystemStore
+import com.twitter.logging.Logger
 
 object AppendFileCommand extends Command {
   private lazy val log = Logger.get(getClass)

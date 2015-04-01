@@ -17,23 +17,28 @@
  */
 package com.tuplejump.snackfs.api.model
 
-import scala.concurrent.duration.FiniteDuration
-import scala.util.{Failure, Success, Try}
-import scala.concurrent.Await
-import com.tuplejump.snackfs.fs.model.INode
 import java.io.FileNotFoundException
-import org.apache.hadoop.fs.{FileStatus, Path}
-import com.twitter.logging.Logger
-import com.tuplejump.snackfs.cassandra.partial.FileSystemStore
+
+import scala.concurrent.Await
+import scala.concurrent.duration.FiniteDuration
+import scala.util.Failure
+import scala.util.Success
+import scala.util.Try
+
+import org.apache.hadoop.fs.FileStatus
+import org.apache.hadoop.fs.Path
+
+import com.tuplejump.snackfs.SnackFS
 import com.tuplejump.snackfs.api.partial.Command
+import com.tuplejump.snackfs.cassandra.partial.FileSystemStore
+import com.tuplejump.snackfs.fs.model.INode
+import com.tuplejump.snackfs.util.LogConfiguration
+import com.twitter.logging.Logger
 
 object ListCommand extends Command {
   private lazy val log = Logger.get(getClass)
 
-  def apply(store: FileSystemStore,
-            path: Path,
-            atMost: FiniteDuration): Array[FileStatus] = {
-
+  def apply(fs: SnackFS, store: FileSystemStore, path: Path, atMost: FiniteDuration): Array[FileStatus] = {
     var result: Array[FileStatus] = Array()
     val absolutePath = path
     val mayBeFile = Try(Await.result(store.retrieveINode(absolutePath), atMost))
@@ -41,21 +46,21 @@ object ListCommand extends Command {
     mayBeFile match {
       case Success(file: INode) =>
         if (file.isFile) {
-          log.debug("fetching file status for %s")
+          if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " fetching file status for %s", path)
           val fileStatus = SnackFileStatus(file, absolutePath)
           result = Array(fileStatus)
-
         } else {
-          log.debug("fetching status for %s")
+          if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " fetching directory status for %s", path)
           val subPaths = Await.result(store.fetchSubPaths(absolutePath, isDeepFetch = false), atMost)
-          result = subPaths.map(p => FileStatusCommand(store, p, atMost)).toArray
+          result = subPaths.map(p => FileStatusCommand(fs, store, p, atMost)).toArray
         }
 
       case Failure(e) =>
-        val ex = new FileNotFoundException("No such file exists")
+        val ex = new FileNotFoundException("No such file exists: " + path)
         log.error(ex, "Failed to list status of %s as it doesn't exist", path)
         throw ex
     }
     result
   }
+
 }
