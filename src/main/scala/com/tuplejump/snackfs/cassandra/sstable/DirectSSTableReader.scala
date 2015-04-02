@@ -38,12 +38,15 @@ case class DirectSSTableReader(remote: Boolean, keyspace: String, sstableLocatio
   private lazy val log = Logger.get(getClass)
   
   private val SBLOCK_COLUMN_FAMILY = "sblock"
+
   private val DATA_FILES_PATH = sstableLocation + keyspace
+  
   private val COLUMN_FAMILY_METADATA = SSTableStore.getMetaData(keyspace, SBLOCK_COLUMN_FAMILY)
   
   private val sstableToFileMap: Map[String, RandomAccessReader] = new ConcurrentHashMap[String, RandomAccessReader]()
-
+  
   private var ssTables: Map[String, SSTableReader] = null
+  
   private var initialized: Boolean = false
   
   def initialize {
@@ -82,7 +85,7 @@ case class DirectSSTableReader(remote: Boolean, keyspace: String, sstableLocatio
 
   def getData(sstable: SSTableReader, decoratedKey: DecoratedKey, blockUUId: UUID, subBlockUUId: UUID): SubBlockData = {
     var dfile:RandomAccessReader = null
-    if(sstableToFileMap.contains(sstable.getFilename)) {
+    if(!remote && sstableToFileMap.contains(sstable.getFilename)) {
       dfile = sstableToFileMap.get(sstable.getFilename).head
     } else {
       dfile = sstable.openDataReader
@@ -114,6 +117,8 @@ case class DirectSSTableReader(remote: Boolean, keyspace: String, sstableLocatio
                     }
                   }
                 } finally {
+                  //close the file descriptor for remote calls
+                  dfile.close
                   log.info(Thread.currentThread.getName() + " Elapsed time to load-column-length %s ms", (Platform.currentTime - start))
                 }
               } else {
@@ -162,5 +167,6 @@ case class DirectSSTableReader(remote: Boolean, keyspace: String, sstableLocatio
   
   def close = {
     sstableToFileMap.values.foreach { dfile => dfile.close }
+    sstableToFileMap.clear
   }
 }

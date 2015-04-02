@@ -32,17 +32,19 @@ import scala.concurrent.duration.FiniteDuration
 import org.apache.cassandra.io.sstable.SSTableReader
 
 import com.tuplejump.snackfs.cassandra.partial.FileSystemStore
+import com.tuplejump.snackfs.cassandra.sstable.DirectSSTableReader
 import com.tuplejump.snackfs.cassandra.sstable.SubBlockData
 import com.tuplejump.snackfs.fs.model.BlockMeta
 import com.tuplejump.snackfs.util.AsyncUtil
 import com.tuplejump.snackfs.util.LogConfiguration
 import com.twitter.logging.Logger
 
-case class BlockInputStream(store: FileSystemStore, blockMeta: BlockMeta, compressed: Boolean, isLocalBlock: Boolean, atMost: FiniteDuration, blockSize: Long, subBlockSize: Long) extends InputStream {
+case class BlockInputStream(store: FileSystemStore, blockMeta: BlockMeta, compressed: Boolean, keySpace: String, sstableLocation: String, isLocalBlock: Boolean, atMost: FiniteDuration, blockSize: Long, subBlockSize: Long) extends InputStream {
 
   private lazy val log = Logger.get(getClass)
 
   private val LENGTH = blockMeta.length
+  
   private val blockToSSTableMap: Map[UUID, (String, SSTableReader)] = new ConcurrentHashMap[UUID, (String, SSTableReader)]()
 
   private var isClosed: Boolean = false
@@ -50,6 +52,13 @@ case class BlockInputStream(store: FileSystemStore, blockMeta: BlockMeta, compre
   private var currentPosition: Long = 0
   private var targetSubBlockSize = 0L
   private var targetSubBlockOffset = 0L
+  private var directSSTableReader: DirectSSTableReader = {
+    if(isLocalBlock && store.getRemoteActor == null) {
+      DirectSSTableReader(false, keySpace, sstableLocation)
+    } else {
+      null
+    }
+  }
 
   private def findSubBlock(targetPosition: Long): InputStream = {
     val subBlockLengthTotals = blockMeta.subBlocks.scanLeft(0L)(_ + _.length).tail
@@ -61,7 +70,6 @@ case class BlockInputStream(store: FileSystemStore, blockMeta: BlockMeta, compre
     }
 
     val start = Platform.currentTime
-
     var localFetch = true
     val subBlock = blockMeta.subBlocks(subBlockIndex)
     var inputStreamToReturn: InputStream = null
@@ -72,10 +80,13 @@ case class BlockInputStream(store: FileSystemStore, blockMeta: BlockMeta, compre
           var data: SubBlockData = null
           if(store.getRemoteActor != null) {
             inputStreamToReturn = store.getRemoteActor.readSSTable(blockMeta.id, subBlock.id, compressed)
-          } else if(store.getSSTableReader != null) {
-            val data: SubBlockData = store.getSSTableReader.readSSTable(blockToSSTableMap, blockMeta.id, subBlock.id)
-            if(data != null) {
-              inputStreamToReturn = AsyncUtil.convertByteArrayToStream(data.bytes, compressed)
+          } else if (directSSTableReader != null) {
+            inputStreamToReturn = {
+              val data: SubBlockData = directSSTableReader.readSSTable(blockToSSTableMap, blockMeta.id, subBlock.id)
+              if (data != null) {
+                AsyncUtil.convertByteArrayToStream(data.bytes, compressed)
+              }
+              null
             }
           }
         } catch {
@@ -174,6 +185,9 @@ case class BlockInputStream(store: FileSystemStore, blockMeta: BlockMeta, compre
     if (!isClosed) {
       if (inputStream != null) {
         inputStream.close
+        if(directSSTableReader != null) {
+          directSSTableReader.close
+        }
       }
       super.close
       isClosed = true

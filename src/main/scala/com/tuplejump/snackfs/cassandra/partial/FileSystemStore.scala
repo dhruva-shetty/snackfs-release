@@ -21,17 +21,19 @@ package com.tuplejump.snackfs.cassandra.partial
 import java.io.InputStream
 import java.nio.ByteBuffer
 import java.util.UUID
+
 import scala.concurrent.Future
+
 import org.apache.hadoop.fs.Path
+
 import com.tuplejump.snackfs.cassandra.model.GenericOpSuccess
 import com.tuplejump.snackfs.cassandra.model.Keyspace
+import com.tuplejump.snackfs.cassandra.model.SnackFSConfiguration
 import com.tuplejump.snackfs.fs.model.BlockMeta
 import com.tuplejump.snackfs.fs.model.INode
 import com.tuplejump.snackfs.fs.model.SubBlockMeta
-import com.tuplejump.snackfs.cassandra.model.SnackFSConfiguration
 import com.tuplejump.snackfs.security.FSPermissionChecker
 import com.tuplejump.snackfs.server.SnackFSClient
-import com.tuplejump.snackfs.cassandra.sstable.DirectSSTableReader
 
 trait FileSystemStore {
   
@@ -67,5 +69,4 @@ trait FileSystemStore {
   
   def getRemoteActor: SnackFSClient
   
-  def getSSTableReader: DirectSSTableReader
 }

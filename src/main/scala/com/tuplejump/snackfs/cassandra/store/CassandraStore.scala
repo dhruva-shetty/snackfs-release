@@ -36,7 +36,6 @@ import com.tuplejump.snackfs.cassandra.model.Keyspace
 import com.tuplejump.snackfs.cassandra.model.SnackFSConfiguration
 import com.tuplejump.snackfs.cassandra.partial.FileSystemStore
 import com.tuplejump.snackfs.cassandra.pool.ThriftConnectionPool
-import com.tuplejump.snackfs.cassandra.sstable.DirectSSTableReader
 import com.tuplejump.snackfs.fs.model.BlockMeta
 import com.tuplejump.snackfs.fs.model.INode
 import com.tuplejump.snackfs.fs.model.SubBlockMeta
@@ -99,7 +98,6 @@ class CassandraStore(configuration: SnackFSConfiguration) extends FileSystemStor
   
   private var fsPermissionChecker: FSPermissionChecker = null
   private var internalClient: SnackFSClient = null
-  private var sstableReader: DirectSSTableReader = null
   
   def getConsistency(consistencyLevel: org.apache.cassandra.thrift.ConsistencyLevel): ConsistencyLevel = {
     consistencyLevel match {
@@ -132,12 +130,8 @@ class CassandraStore(configuration: SnackFSConfiguration) extends FileSystemStor
     
     fsPermissionChecker = new FSPermissionChecker(this, user, configuration.useACL)
     
-    if(config.useSSTable) {
-      if(config.standalone) {
-        sstableReader = DirectSSTableReader(false, configuration.keySpace, configuration.sstableLocation)
-      } else {
+    if(config.useSSTable && !config.standalone) {
         internalClient = new SnackFSClient(configuration)
-      }
     }
   }
   
@@ -298,18 +292,17 @@ class CassandraStore(configuration: SnackFSConfiguration) extends FileSystemStor
           }
         } catch {
           case f: Exception =>
-            log.error(f, "failed to retrieve Inode for path %s", path)
+            if(LogConfiguration.isDebugEnabled) log.debug("Failed to retrieve Inode for path %s", path)
             result failure f
         }
       }
     }, AsyncUtil.getExecutionContext)
-    
     result.future
   }
   
   def retrieveBlock(blockMeta: BlockMeta, compressed: Boolean, isLocalBlock: Boolean): InputStream = {
     if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " retrieve Block %s useSSTable %s isLocalBlock %s", blockMeta.toString, configuration.useSSTable, isLocalBlock)
-    BlockInputStream(this, blockMeta, compressed, configuration.useSSTable && isLocalBlock, configuration.atMost, configuration.blockSize, configuration.subBlockSize)
+    BlockInputStream(this, blockMeta, compressed, configuration.keySpace, configuration.sstableLocation, configuration.useSSTable && isLocalBlock, configuration.atMost, configuration.blockSize, configuration.subBlockSize)
   }
   
   def storeSubBlock(blockId: UUID, subBlockMeta: SubBlockMeta, dataBuffer: ByteBuffer, compressed: Boolean): Future[GenericOpSuccess] = {
@@ -571,5 +564,4 @@ class CassandraStore(configuration: SnackFSConfiguration) extends FileSystemStor
   
   def getRemoteActor: SnackFSClient = internalClient
   
-  def getSSTableReader: DirectSSTableReader = sstableReader
 }
