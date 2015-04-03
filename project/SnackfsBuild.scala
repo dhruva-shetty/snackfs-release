@@ -32,6 +32,25 @@ object SnackfsBuild extends Build {
 
   lazy val dist = TaskKey[Unit]("dist", "Generates project distribution")
 
+    lazy val pom = {
+    <scm>
+      <url>git@github.com:tuplejump/snackfs.git</url>
+      <connection>scm:git:git@github.com:tuplejump/snackfs.git</connection>
+    </scm>
+      <developers>
+        <developer>
+          <id>milliondreams</id>
+          <name>Rohit Rai</name>
+          <url>https://twitter.com/milliondreams</url>
+        </developer>
+        <developer>
+          <id>shiti</id>
+          <name>Shiti Saxena</name>
+          <url>https://eraoferrors.blogspot.com</url>
+        </developer>
+      </developers>
+  }
+  
   lazy val dependencies = Seq("org.apache.hadoop" % "hadoop-common" % "2.4.0" % "provided",
     "org.apache.cassandra" % "cassandra-thrift" % CAS_VERSION intransitive(),
     "org.apache.cassandra" % "cassandra-all" % CAS_VERSION intransitive(),
