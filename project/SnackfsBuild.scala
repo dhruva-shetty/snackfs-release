@@ -123,9 +123,9 @@ object SnackfsBuild extends Build {
 
     licenses := Seq("Apache License, Version 2.0" -> url("http://www.apache.org/licenses/LICENSE-2.0")),
 
-    homepage := Some(url("https://www.blackrock.com")),
+    homepage := Some(url("https://tuplejump.github.io/calliope/snackfs.html")),
 
-    organizationName := "BlackRock",
+    organizationName := "Tuplejump, Inc.",
 
     organizationHomepage := Some(url("http://www.tuplejump.com")),
     
