@@ -22,9 +22,9 @@ import sbt.Keys._
 
 object SnackfsBuild extends Build {
 
-  lazy val VERSION = "0.6.1-EA"
+  lazy val VERSION = "1.05"
 
-  lazy val CAS_VERSION = "2.1.0"
+  lazy val CAS_VERSION = "2.1.3"
 
   lazy val THRIFT_VERSION = "0.9.1"
 
@@ -32,7 +32,7 @@ object SnackfsBuild extends Build {
 
   lazy val dist = TaskKey[Unit]("dist", "Generates project distribution")
 
-    lazy val pom = {
+  lazy val pom = {
     <scm>
       <url>git@github.com:tuplejump/snackfs.git</url>
       <connection>scm:git:git@github.com:tuplejump/snackfs.git</connection>
@@ -68,7 +68,7 @@ object SnackfsBuild extends Build {
     "org.apache.commons" % "commons-lang3" % "3.1" % "it,test",
     "net.jpountz.lz4" % "lz4" % "1.2.0",
     "org.eclipse.jetty.orbit" % "javax.servlet" % "2.5.0.v201103041518",
-    "org.antlr" % "antlr-runtime" % "3.4",
+    "org.antlr" % "antlr-runtime" % "3.5.2",
     "com.googlecode.concurrentlinkedhashmap" % "concurrentlinkedhashmap-lru" % "1.3",
     "com.google.guava" % "guava" % "15.0",
     "com.github.stephenc.high-scale-lib" % "high-scale-lib" % "1.1.4",
@@ -77,10 +77,11 @@ object SnackfsBuild extends Build {
     "org.yaml" % "snakeyaml" % "1.12",
     "net.sf.supercsv" % "super-csv" % "2.1.0",
     "com.datastax.cassandra" % "cassandra-driver-core" % "2.1.1",
-    "com.github.jbellis" % "jamm" % "0.2.6",
+    "com.github.jbellis" % "jamm" % "0.3.0",
     "com.typesafe.akka" %% "akka-actor" % "2.3.2",
     "com.typesafe.akka" %% "akka-remote" % "2.3.2",
-    "com.google.protobuf" % "protobuf-java" % "2.5.0"
+    "com.google.protobuf" % "protobuf-java" % "2.5.0",
+    "io.netty" % "netty-all" % "4.0.26.Final"
   )
 
   lazy val snackSettings = Project.defaultSettings ++ Seq(
@@ -129,15 +130,15 @@ object SnackfsBuild extends Build {
 
     organizationHomepage := Some(url("http://www.tuplejump.com")),
     
-    resolvers += "Maven Central" at "http://central.maven.org/maven2/",
-    
     resolvers += "Maven Repository" at "http://maven-repository.com/artifact/",
     
+    resolvers += "Maven Central" at "http://central.maven.org/maven2/",
+
     resolvers += "Akka Repository" at "http://repo.akka.io/releases/",
     
     resolvers += "Spray Repository" at " http://repo.spray.cc/",
     
-    excludeFilter in unmanagedResources := HiddenFileFilter || "core-site.xml"
+    excludeFilter in unmanagedResources := HiddenFileFilter || "core-site.xml" || "log4j.properties" || "cassandra.yaml"
   )
 
   lazy val snackfs = Project(
@@ -151,7 +152,7 @@ object SnackfsBuild extends Build {
       val userHome = System.getProperty("user.home")
       val ivyHome = userHome + "/.ivy2/cache/" //should be updated to point to ivy cache if its not in home directory
 
-      val destination = "target/SnackFS_%s-%s/".format(sv, v)
+      val destination = "target/snackfs_%s-%s/".format(sv, v)
       val lib = destination + "lib/"
       val bin = destination + "bin/"
       val conf = destination + "conf/"
@@ -195,11 +196,30 @@ object SnackfsBuild extends Build {
 
       val basedir: sbt.File = new File("target")
       val distdir: sbt.File = new File("target/snackfs_%s-%s".format(sv, v))
-      val zipFile: sbt.File = new File("target/snackfs_%s-%s.zip".format(sv, v))
-      def entries(f: File):List[File] = f :: (if (f.isDirectory) IO.listFiles(f).toList.flatMap(entries(_)) else Nil)
-      IO.zip(entries(distdir).map(d => (d, d.getAbsolutePath.substring(basedir.getAbsolutePath.length + 1))), zipFile)
-      IO.delete(distdir)
-      s.log.info("SnackFS Distribution created at %s".format(zipFile.getAbsolutePath))
+      if(System.getProperty("os.name").contains("Windows")) {
+        val zipFile: sbt.File = new File("target/snackfs_%s-%s.zip".format(sv, v))
+        def entries(f: File):List[File] = f :: (if (f.isDirectory) IO.listFiles(f).toList.flatMap(entries(_)) else Nil)
+        IO.zip(entries(distdir).map(d => (d, d.getAbsolutePath.substring(basedir.getAbsolutePath.length + 1))), zipFile)
+        IO.delete(distdir)
+        s.log.info("SnackFS Distribution created at %s".format(zipFile.getAbsolutePath))
+      } else {
+        val distTgz: sbt.File = new File("target/snackfs_%s-%s.tgz".format(sv, v))
+        val tarball: sbt.File = makeTarball("snackfs_%s-%s".format(sv, v), distdir, basedir)
+        IO.gzip(tarball, distTgz)
+        IO.delete(tarball)
+        IO.delete(distdir)
+        s.log.info("SnackFS Distribution created at %s".format(distTgz.getAbsolutePath))
+      }
+  }
+
+   def makeTarball(name: String, tarDir: File, rdir: File): File = {
+    val tarball = new File("target") / (name + ".tar")
+    val process: ProcessBuilder = Process(Seq("tar", "-pcf", tarball.getAbsolutePath, tarDir.getName), Some(rdir))
+    process.! match {
+      case 0 => ()
+      case n => sys.error("Error tarballing " + tarball + ". Exit code: " + n)
+    }
+    tarball
   }
 
   def getLibraries(sv: String): List[String] = {
@@ -209,11 +229,11 @@ object SnackfsBuild extends Build {
     val cassandra = jarSource + "org.apache.cassandra/"
     val cassandraRelated = List(cassandra + "cassandra-all/cassandra-all-" + CAS_VERSION + ".jar",
       cassandra + "cassandra-thrift/cassandra-thrift-" + CAS_VERSION + ".jar",
-      jarSource + "org.apache.thrift/libthrift/libthrift-0.9.1.jar",
+      jarSource + "org.apache.thrift/libthrift/libthrift-" + THRIFT_VERSION + ".jar",
       jarSource + "commons-pool/commons-pool/commons-pool-1.6.jar",
       jarSource + "net.jpountz.lz4/lz4/lz4-1.2.0.jar",
-      jarSource + "com.github.jbellis/jamm/jamm-0.2.6.jar",
-      jarSource + "org.antlr/antlr-runtime/antlr-runtime-3.4.jar",
+      jarSource + "com.github.jbellis/jamm/jamm-0.3.0.jar",
+      jarSource + "org.antlr/antlr-runtime/antlr-runtime-3.5.2.jar",
       jarSource + "com.googlecode.concurrentlinkedhashmap/concurrentlinkedhashmap-lru/concurrentlinkedhashmap-lru-1.3.jar",
       jarSource + "org.apache.commons/commons-lang3/commons-lang3-3.1.jar",
       jarSource + "com.github.stephenc.high-scale-lib/high-scale-lib/high-scale-lib-1.1.4.jar",
@@ -263,6 +283,7 @@ object SnackfsBuild extends Build {
                          jarSource + "commons-collections/commons-collections/commons-collections-3.2.1.jar",
                          jarBundle + "com.datastax.cassandra/cassandra-driver-core/cassandra-driver-core-2.1.1.jar",
                          jarBundle + "io.netty/netty/netty-3.9.0.Final.jar",
+                         jarSource + "io.netty/netty-all/netty-all-4.0.26.Final.jar",
                          jarSource + "net.sf.supercsv/super-csv/super-csv-2.1.0.jar",
                          jarBundle + "org.yaml/snakeyaml/snakeyaml-1.12.jar",
                          jarSource + "commons-cli/commons-cli/commons-cli-1.2.jar",
