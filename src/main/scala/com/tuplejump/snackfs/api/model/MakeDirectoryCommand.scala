@@ -48,7 +48,7 @@ object MakeDirectoryCommand extends Command {
           result = false
         }
 
-      case Failure(e: Exception) =>
+      case Failure(e: Throwable) =>
         val user = System.getProperty("user.name")
         val timestamp = System.currentTimeMillis()
         val iNode = INode(user, UnixGroupsMapping.getUserGroup(user), filePermission, FileType.DIRECTORY, null, timestamp)

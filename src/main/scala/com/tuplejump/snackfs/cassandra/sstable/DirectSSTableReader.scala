@@ -4,13 +4,10 @@ import java.nio.file.Files
 import java.nio.file.Paths
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
-
-import scala.annotation.migration
 import scala.collection.JavaConversions.asScalaBuffer
 import scala.collection.JavaConversions.mapAsScalaConcurrentMap
 import scala.collection.mutable.Map
 import scala.compat.Platform
-
 import org.apache.cassandra.config.CFMetaData
 import org.apache.cassandra.db.AtomDeserializer
 import org.apache.cassandra.db.Cell
@@ -27,13 +24,19 @@ import org.apache.cassandra.io.util.RandomAccessReader
 import org.apache.cassandra.service.StorageService
 import org.apache.cassandra.utils.ByteBufferUtil
 import org.apache.commons.lang.StringUtils
-
+import com.tuplejump.snackfs.SnackFSMode.AKKA
+import com.tuplejump.snackfs.SnackFSMode.LOCAL
+import com.tuplejump.snackfs.SnackFSMode.NETTY
+import com.tuplejump.snackfs.SnackFSMode.SnackFSMode
+import com.tuplejump.snackfs.SnackFSMode.isLocal
 import com.tuplejump.snackfs.util.LogConfiguration
 import com.twitter.logging.Logger
+import io.netty.channel.DefaultFileRegion
+import java.io.IOException
 
-case class SubBlockData(fileName:String, positionToSeek: Long, length: Int, bytes: Array[Byte])
+case class SubBlockData(fileName:String, positionToSeek: Long, length: Int, bytes: Array[Byte], fileRegion: DefaultFileRegion) extends Serializable
 
-case class DirectSSTableReader(remote: Boolean, keyspace: String, sstableLocation: String) {
+case class DirectSSTableReader(mode: SnackFSMode, keyspace: String, sstableLocation: String) {
 
   private lazy val log = Logger.get(getClass)
   
@@ -85,7 +88,7 @@ case class DirectSSTableReader(remote: Boolean, keyspace: String, sstableLocatio
 
   def getData(sstable: SSTableReader, decoratedKey: DecoratedKey, blockUUId: UUID, subBlockUUId: UUID): SubBlockData = {
     var dfile:RandomAccessReader = null
-    if(!remote && sstableToFileMap.contains(sstable.getFilename)) {
+    if(isLocal(mode) && sstableToFileMap.contains(sstable.getFilename)) {
       dfile = sstableToFileMap.get(sstable.getFilename).head
     } else {
       dfile = sstable.openDataReader
@@ -107,22 +110,39 @@ case class DirectSSTableReader(remote: Boolean, keyspace: String, sstableLocatio
             dfile.seek(positionToSeek)
             var mark = dfile.mark();
             if(dfile.bytesPastMark(mark) < indexInfo.width) {
-              if(remote) {
-                val start = Platform.currentTime
-                try {
-                  while(dfile.bytesPastMark(mark) < indexInfo.width) {
-                    val sblockLength = getSBlockLength(dfile, sBlockUUID)
-                    if(sblockLength >= 0) {
-                      return SubBlockData(fileName, positionToSeek + dfile.bytesPastMark(mark), sblockLength, null)
+              var sblockLength = -1
+              mode match {
+                case LOCAL =>
+                  return SubBlockData(fileName, -1, sblockLength, loadColumn(sstable.metadata.getOnDiskDeserializer(dfile, sstable.descriptor.version), sstable.metadata, blockUUId, subBlockUUId), null)
+
+                case NETTY =>
+                  val start = Platform.currentTime
+                  try {
+                    while(dfile.bytesPastMark(mark) < indexInfo.width) {
+                      sblockLength = getSBlockLength(dfile, sBlockUUID)
+                      if(sblockLength >= 0) {
+                    	  val position = positionToSeek + dfile.bytesPastMark(mark)
+                        return SubBlockData(fileName, position, sblockLength, null, new DefaultFileRegion(dfile.getChannel, position, sblockLength))
+                      }
                     }
+                  } finally {
+                    log.info(Thread.currentThread.getName() + " Elapsed time to load-column-length %s ms, length %s", (Platform.currentTime - start), sblockLength)
                   }
-                } finally {
-                  //close the file descriptor for remote calls
-                  dfile.close
-                  log.info(Thread.currentThread.getName() + " Elapsed time to load-column-length %s ms", (Platform.currentTime - start))
-                }
-              } else {
-                return SubBlockData(fileName, -1, -1, loadColumn(sstable.metadata.getOnDiskDeserializer(dfile, sstable.descriptor.version), sstable.metadata, blockUUId, subBlockUUId))
+                  
+                case AKKA =>
+                  val start = Platform.currentTime
+                  try {
+                    while(dfile.bytesPastMark(mark) < indexInfo.width) {
+                      sblockLength = getSBlockLength(dfile, sBlockUUID)
+                      if(sblockLength >= 0) {
+                        val position = positionToSeek + dfile.bytesPastMark(mark)
+                        return SubBlockData(fileName, position, sblockLength, null, null)
+                      }
+                    }
+                  } finally {
+                    dfile.close
+                    log.info(Thread.currentThread.getName() + " Elapsed time to load-column-length %s ms, length %s", (Platform.currentTime - start), sblockLength)
+                  }
               }
             }
           }
@@ -137,7 +157,10 @@ case class DirectSSTableReader(remote: Boolean, keyspace: String, sstableLocatio
     val mask = dfile.readUnsignedByte
     val timestamp = dfile.readLong
     val sblockLength: Int = dfile.readInt
-    if(sblockLength == 0 || !name.contains(subBlockUUId) || (mask & ColumnSerializer.DELETION_MASK) != 0 || (mask & ColumnSerializer.EXPIRATION_MASK) != 0) {
+    if (sblockLength < 0) {
+        throw new IOException("Corrupt (negative) value length encountered");
+    }
+    if(sblockLength == 0 || !name.contains(subBlockUUId) || (mask & ColumnSerializer.RANGE_TOMBSTONE_MASK) != 0 || (mask & ColumnSerializer.DELETION_MASK) != 0 || (mask & ColumnSerializer.EXPIRATION_MASK) != 0) {
       FileUtils.skipBytesFully(dfile, sblockLength)
       return -1
     } else {
@@ -156,7 +179,7 @@ case class DirectSSTableReader(remote: Boolean, keyspace: String, sstableLocatio
         try {
           return cell.value.array
         } finally {
-          log.info(Thread.currentThread.getName() + " Elapsed time to load-column %s ms, io-time %s ms", (Platform.currentTime - start), ioEnd)
+          log.info(Thread.currentThread.getName() + " Elapsed time to load-column %s ms, io-time %s ms, length %s", (Platform.currentTime - start), ioEnd, cell.value.array.length)
         }
       }
       if (LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " sblock %s, cell %s, size %s", subBlockUUId, metadata.comparator.getString(cell.name), cell.value.array.length)

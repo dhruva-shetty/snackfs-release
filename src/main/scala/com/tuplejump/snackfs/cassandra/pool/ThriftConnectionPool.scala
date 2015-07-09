@@ -27,8 +27,6 @@ class ThriftConnectionPool(configuration: SnackFSConfiguration) {
 
   private lazy val log = Logger.get(getClass)
   
-  private val partitioner = StorageService.getPartitioner
-  
   private var ring: scala.collection.mutable.Buffer[(java.util.List[String], Long, Long)] = null
   
   private val clientPool: ObjectPool[ThriftClientAndSocket] = new StackObjectPool[ThriftClientAndSocket](new ClientPoolFactory(configuration.CassandraHost, configuration.CassandraThriftPort, configuration.keySpace)) {
@@ -104,18 +102,18 @@ class ThriftConnectionPool(configuration: SnackFSConfiguration) {
 
     //For each block in the file, get the owner node
     inode.blocks.foreach(b => {
-      val decoratedKey = partitioner.decorateKey(UUIDType.instance.decompose(b.id))
-      val token = decoratedKey.getToken.asInstanceOf[LongToken]
+      val decoratedKey = configuration.getPartitioner.decorateKey(UUIDType.instance.decompose(b.id))
+      val token: LongToken = decoratedKey.getToken.asInstanceOf[LongToken]
 
       val xr = ring.filter {
         p =>
           if (p._2 < p._3) {
-            val eval = p._2 <= token.token && p._3 >= token.token
-            if(eval && LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + "host: %s -> %s <= %s and %s >= %s", p._1, p._2, token.token, p._3, token.token )
+            val eval = p._2 <= token.getTokenValue && p._3 >= token.getTokenValue
+            if(eval && LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + "host: %s -> %s <= %s and %s >= %s", p._1, p._2, token.getTokenValue, p._3, token.getTokenValue )
             eval
           } else {
-            val eval = (p._2 <= token.token && Long.MaxValue >= token.token) || (p._3 >= token.token && Long.MinValue <= token.token)
-            if(eval && LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + "host: %s -> %s <= %s and %s >= %s || %s >= %s and %s <= %s",  p._1, p._2, token.token, Long.MaxValue, token.token, p._3, token.token, Long.MinValue, token.token )
+            val eval = (p._2 <= token.getTokenValue && Long.MaxValue >= token.getTokenValue) || (p._3 >= token.getTokenValue && Long.MinValue <= token.getTokenValue)
+            if(eval && LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + "host: %s -> %s <= %s and %s >= %s || %s >= %s and %s <= %s",  p._1, p._2, token.getTokenValue, Long.MaxValue, token.getTokenValue, p._3, token.getTokenValue, Long.MinValue, token.getTokenValue )
             eval
           }
       }
@@ -127,7 +125,7 @@ class ThriftConnectionPool(configuration: SnackFSConfiguration) {
         endpoints = ring(0)._1.toList
       }
       response += (b -> endpoints)
-      if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " for iNode: %s found block: %s token: %s at host: %s", path, b.id, token.token, endpoints)
+      if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " for iNode: %s found block: %s token: %s at host: %s", path, b.id, token.getTokenValue, endpoints)
     })
     response
   }

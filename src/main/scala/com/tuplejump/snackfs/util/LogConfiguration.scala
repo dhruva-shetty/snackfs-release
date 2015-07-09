@@ -29,7 +29,6 @@ import com.twitter.logging.QueueingHandler
 
 object LogConfiguration {
   
-  val logdir = "/local1/logs/snackfs/"
   val logname = "snackfs.log"
   val loglevel = if (System.getenv("SNACKFS_LOG_LEVEL") != null) System.getenv("SNACKFS_LOG_LEVEL") else System.getProperty("SNACKFS_LOG_LEVEL")
   val asyncMaxSizeFlag = 4096
@@ -50,6 +49,7 @@ object LogConfiguration {
   def isDebugEnabled() : Boolean = isDebug
   
   def getLogLocation(): String = {
+    val logdir = System.getenv("SNACKFS_LOG_DIR") + "/"
     val localDirectory = FileSystems.getDefault().getPath(logdir)
     if(Files.exists(localDirectory, LinkOption.NOFOLLOW_LINKS)){
       val path = FileSystems.getDefault().getPath(logdir, logname)

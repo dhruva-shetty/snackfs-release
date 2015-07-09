@@ -38,7 +38,7 @@ object ChmodCommand extends Command {
         log.info(Thread.currentThread.getName() + " storing iNode %s", filePath)
         Await.ready(store.storeINode(filePath, newInode), atMost)
 
-      case Failure(e: Exception) =>
+      case Failure(e: Throwable) =>
         val ex = new IOException("No such file.")
         log.error(ex, "Failed to do chmod for file %s as it doesnt exist", filePath)
         throw ex

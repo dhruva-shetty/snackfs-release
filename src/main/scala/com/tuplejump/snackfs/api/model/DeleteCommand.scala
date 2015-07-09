@@ -75,7 +75,7 @@ object DeleteCommand extends Command {
           }
         }
 
-      case Failure(e) =>
+      case Failure(e: Throwable) =>
         if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " failed to delete %s, as it doesn't exist", srcPath)
         result = false
     }

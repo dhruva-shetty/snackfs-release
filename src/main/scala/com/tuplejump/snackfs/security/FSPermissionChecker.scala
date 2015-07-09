@@ -45,7 +45,7 @@ case class FSPermissionChecker(store: FileSystemStore, user: String, useACL: Boo
     Try(Await.result(store.retrieveINode(path), atMost)) match {
       case Success(inode: INode) =>
         checkPermission(path, inode, access, doCheckOwner, checkAncestor, checkChildren, atMost)
-      case Failure(e: Exception) =>
+      case Failure(e: Throwable) =>
         log.error(Thread.currentThread.getName() + " Failed to check permission: " + e.getMessage)
     }
   }
@@ -109,7 +109,7 @@ case class FSPermissionChecker(store: FileSystemStore, user: String, useACL: Boo
           if (inode != null) { //we bail out after the first success
             return
           }
-        case Failure(e: Exception) =>
+        case Failure(e: Throwable) =>
           log.error(Thread.currentThread.getName() + " Failed to check permission: " + e.getMessage)
       }
     }
@@ -127,7 +127,7 @@ case class FSPermissionChecker(store: FileSystemStore, user: String, useACL: Boo
         case Success(inode: INode) =>
           val path = pair._1
           check(path, inode, access, doCheckOwner)
-        case Failure(e: Exception) =>
+        case Failure(e: Throwable) =>
           log.error(Thread.currentThread.getName() + " Failed to check permission: " + e.getMessage)
       }
     }

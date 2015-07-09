@@ -61,8 +61,8 @@ object SSTableStore {
 
   def getSSTables(keyspace: String, directoryPath: String, columnFamily: String): Map[String, SSTableReader] = {
     val start = Platform.currentTime
-    validateSSTableDirectory(directoryPath, columnFamily)
-    if (!initialized) {
+    intializeSSTableDirectory(directoryPath, columnFamily)
+    if (sblockDirectory != null && !initialized) {
       this.synchronized({
         if (!initialized) {
           initDirectoryWatch(FileSystems.getDefault.getPath(sblockDirectory.getAbsolutePath), keyspace, columnFamily)
@@ -72,9 +72,13 @@ object SSTableStore {
           var filesRead = new AtomicInteger(0)
           files.par.foreach { file =>
             if (!ssTableMap.keySet.contains(file.getAbsolutePath)) {
-              if (LogConfiguration.isDebugEnabled) log.debug("Reading file: %s/%s", sblockDirectory.getAbsolutePath, file.getName)
-              ssTableMap.put(file.getAbsolutePath, SSTableReader.open(Descriptor.fromFilename(new File(sblockDirectory.getAbsolutePath), file.getName).left, getMetaData(keyspace, columnFamily)))
-              filesRead.incrementAndGet
+              try {
+                if (LogConfiguration.isDebugEnabled) log.debug("Reading file: %s/%s", sblockDirectory.getAbsolutePath, file.getName)
+                ssTableMap.put(file.getAbsolutePath, SSTableReader.open(Descriptor.fromFilename(new File(sblockDirectory.getAbsolutePath), file.getName).left, getMetaData(keyspace, columnFamily)))
+                filesRead.incrementAndGet
+              } catch {
+                case e: Throwable => log.error(e, "Failed to read sstable %s", file.getName)
+              }
             }
           }
           if (filesRead != 0) {
@@ -91,14 +95,14 @@ object SSTableStore {
     ssTableMap
   }
 
-  def validateSSTableDirectory(directoryPath: String, columnFamily: String) = {
+  def intializeSSTableDirectory(directoryPath: String, columnFamily: String) = {
     if (sblockDirectory == null) {
       this.synchronized({
         if (sblockDirectory == null && !Files.exists(Paths.get(directoryPath + columnFamily))) {
           val directory = new File(directoryPath).listFiles(new FilenameFilter {
             override def accept(dir: File, name: String): Boolean = return name.startsWith(columnFamily)
           })
-          if (directory.length > 0) {
+          if (directory != null && directory.length > 0) {
             sblockDirectory = directory.head
           }
         }

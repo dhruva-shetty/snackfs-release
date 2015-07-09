@@ -31,6 +31,7 @@ import scala.concurrent.duration.FiniteDuration
 
 import org.apache.cassandra.io.sstable.SSTableReader
 
+import com.tuplejump.snackfs.SnackFSMode
 import com.tuplejump.snackfs.cassandra.partial.FileSystemStore
 import com.tuplejump.snackfs.cassandra.sstable.DirectSSTableReader
 import com.tuplejump.snackfs.cassandra.sstable.SubBlockData
@@ -52,12 +53,9 @@ case class BlockInputStream(store: FileSystemStore, blockMeta: BlockMeta, compre
   private var currentPosition: Long = 0
   private var targetSubBlockSize = 0L
   private var targetSubBlockOffset = 0L
-  private var directSSTableReader: DirectSSTableReader = {
-    if(isLocalBlock && store.getRemoteActor == null) {
-      DirectSSTableReader(false, keySpace, sstableLocation)
-    } else {
-      null
-    }
+  private var directSSTableReader: DirectSSTableReader = (isLocalBlock && store.getRemoteAkkaClient == null && store.getRemoteNettyClient == null) match {
+    case true  => DirectSSTableReader(SnackFSMode.LOCAL, keySpace, sstableLocation)
+    case false => null
   }
 
   private def findSubBlock(targetPosition: Long): InputStream = {
@@ -78,15 +76,18 @@ case class BlockInputStream(store: FileSystemStore, blockMeta: BlockMeta, compre
       if (isLocalBlock) {
         try {
           var data: SubBlockData = null
-          if(store.getRemoteActor != null) {
-            inputStreamToReturn = store.getRemoteActor.readSSTable(blockMeta.id, subBlock.id, compressed)
+          if(store.getRemoteAkkaClient != null) {
+            inputStreamToReturn = store.getRemoteAkkaClient.readSSTable(blockMeta.id, subBlock.id, compressed)
+          } else if(store.getRemoteNettyClient != null) {
+            inputStreamToReturn = store.getRemoteNettyClient.readSSTable(blockMeta.id, subBlock.id, compressed)
           } else if (directSSTableReader != null) {
             inputStreamToReturn = {
               val data: SubBlockData = directSSTableReader.readSSTable(blockToSSTableMap, blockMeta.id, subBlock.id)
               if (data != null) {
                 AsyncUtil.convertByteArrayToStream(data.bytes, compressed)
+              } else {
+                null
               }
-              null
             }
           }
         } catch {

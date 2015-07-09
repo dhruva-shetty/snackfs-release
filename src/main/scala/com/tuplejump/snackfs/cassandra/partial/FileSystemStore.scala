@@ -33,7 +33,8 @@ import com.tuplejump.snackfs.fs.model.BlockMeta
 import com.tuplejump.snackfs.fs.model.INode
 import com.tuplejump.snackfs.fs.model.SubBlockMeta
 import com.tuplejump.snackfs.security.FSPermissionChecker
-import com.tuplejump.snackfs.server.SnackFSClient
+import com.tuplejump.snackfs.server.SnackFSAkkaClient
+import com.tuplejump.snackfs.server.SnackFSNettyClient
 
 trait FileSystemStore {
   
@@ -67,6 +68,8 @@ trait FileSystemStore {
   
   def permissionChecker: FSPermissionChecker
   
-  def getRemoteActor: SnackFSClient
+  def getRemoteAkkaClient: SnackFSAkkaClient
+  
+  def getRemoteNettyClient: SnackFSNettyClient
   
 }

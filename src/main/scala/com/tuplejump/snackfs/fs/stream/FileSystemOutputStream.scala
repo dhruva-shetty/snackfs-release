@@ -22,17 +22,14 @@ import java.io.IOException
 import java.io.OutputStream
 import java.nio.ByteBuffer
 import java.util.UUID
-
 import scala.compat.Platform
 import scala.concurrent.Await
 import scala.concurrent.Future
 import scala.concurrent.TimeoutException
 import scala.concurrent.duration.FiniteDuration
-
 import org.apache.cassandra.utils.UUIDGen
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.fs.permission.FsPermission
-
 import com.tuplejump.snackfs.cassandra.model.GenericOpSuccess
 import com.tuplejump.snackfs.cassandra.partial.FileSystemStore
 import com.tuplejump.snackfs.fs.model.BlockMeta
@@ -42,6 +39,8 @@ import com.tuplejump.snackfs.fs.model.SubBlockMeta
 import com.tuplejump.snackfs.security.UnixGroupsMapping
 import com.tuplejump.snackfs.util.LogConfiguration
 import com.twitter.logging.Logger
+import io.netty.buffer.PooledByteBufAllocator
+import io.netty.buffer.ByteBuf
 
 case class FileSystemOutputStream(store: FileSystemStore, path: Path,
                                   blockSize: Long, subBlockSize: Long,
@@ -51,9 +50,11 @@ case class FileSystemOutputStream(store: FileSystemStore, path: Path,
 
   private var blockFutures: Seq[Future[GenericOpSuccess]] = Nil
   private var blockId: UUID = UUIDGen.getTimeUUID
-  private var outBuffer = Array.empty[Byte]
   private var subBlocksMeta = List[SubBlockMeta]()
   private var blocksMeta = List[BlockMeta]()
+  
+  private val pooled : PooledByteBufAllocator = PooledByteBufAllocator.DEFAULT
+  private var outBuffer: ByteBuf = pooled.directBuffer(subBlockSize.toInt)
 
   private var isClosed: Boolean = false
   private var isClosing = false
@@ -63,6 +64,9 @@ case class FileSystemOutputStream(store: FileSystemStore, path: Path,
   private var blockOffset: Long = 0
   private var position: Long = 0
   
+  private var blockStartTime = Platform.currentTime
+  private var blockNumber = 0
+  
   private val compressed = store.config.isCompressed(path)
 
   def write(p1: Int) = {
@@ -71,7 +75,7 @@ case class FileSystemOutputStream(store: FileSystemStore, path: Path,
       log.error(ex, "Failed to write as stream is closed")
       throw ex
     }
-    outBuffer = outBuffer ++ Array(p1.toByte)
+    outBuffer.writeByte(p1.toByte)
     position += 1
     if (position == subBlockSize) {
       flush()
@@ -91,8 +95,7 @@ case class FileSystemOutputStream(store: FileSystemStore, path: Path,
       var offsetTemp = offset
       while (lengthTemp > 0) {
         val lengthToWrite = math.min(subBlockSize - position, lengthTemp).asInstanceOf[Int]
-        val slice: Array[Byte] = buf.slice(offsetTemp, offsetTemp + lengthToWrite)
-        outBuffer = outBuffer ++ slice
+        outBuffer.writeBytes(buf, offsetTemp, offsetTemp + lengthToWrite)
         lengthTemp -= lengthToWrite
         offsetTemp += lengthToWrite
         position += lengthToWrite
@@ -108,12 +111,13 @@ case class FileSystemOutputStream(store: FileSystemStore, path: Path,
       val subBlockMeta = SubBlockMeta(UUIDGen.getTimeUUID, subBlockOffset, position)
       val start = Platform.currentTime
       try {
-        blockFutures = blockFutures :+ store.storeSubBlock(blockId, subBlockMeta, ByteBuffer.wrap(outBuffer), compressed)
+        blockFutures = blockFutures :+ store.storeSubBlock(blockId, subBlockMeta, outBuffer.slice(0, position.toInt).nioBuffer, compressed)
         subBlockOffset += position
         bytesWrittenToBlock += position
         subBlocksMeta = subBlocksMeta :+ subBlockMeta
         position = 0
-        outBuffer = Array.empty[Byte]
+        outBuffer.release
+        outBuffer = pooled.directBuffer(subBlockSize.toInt)
       } finally {
         if(LogConfiguration.isDebugEnabled) log.debug(Thread.currentThread.getName() + " Elapsed time to flush sblockId %s is %s ms", subBlockMeta.id, (Platform.currentTime - start))
       }
@@ -149,10 +153,14 @@ case class FileSystemOutputStream(store: FileSystemStore, path: Path,
       throw ex
     }
     endSubBlock
-    if (bytesWrittenToBlock >= blockSize || isClosing) endBlock
-    if(isClosing) {
+    if (bytesWrittenToBlock >= blockSize || isClosing) {
+      endBlock
+      val start = Platform.currentTime
       blockFutures.foreach(f => Await.ready(f, atMost))
+      log.info(Thread.currentThread.getName() + " Elapsed time to write block-%s is %s ms, wait time for flushing %s blockfutures is %s ms", blockNumber, (Platform.currentTime - blockStartTime), blockFutures.size, (Platform.currentTime - start))
       blockFutures = Nil
+      blockNumber += 1
+      blockStartTime = Platform.currentTime
     }
   }
 

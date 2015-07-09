@@ -6,6 +6,7 @@ import scala.collection.mutable.Map
 
 import org.apache.cassandra.io.sstable.SSTableReader
 
+import com.tuplejump.snackfs.SnackFSMode.AKKA
 import com.tuplejump.snackfs.cassandra.sstable.DirectSSTableReader
 import com.tuplejump.snackfs.server.SnackFSServer
 import com.tuplejump.snackfs.server.messages.ReadSSTableRequest
@@ -13,7 +14,6 @@ import com.tuplejump.snackfs.server.messages.ReadSSTableResponse
 import com.twitter.logging.Logger
 
 import akka.actor.Actor
-import akka.actor.actorRef2Scala
 
 class ReadSBlockActor extends Actor {
   
@@ -22,7 +22,7 @@ class ReadSBlockActor extends Actor {
   private val config = SnackFSServer.getSnackfsConfig
   
   private val reader: DirectSSTableReader = {
-    val reader = DirectSSTableReader(true, config.keySpace, config.sstableLocation)
+    val reader = DirectSSTableReader(AKKA, config.keySpace, config.sstableLocation)
     reader.initialize
     reader
   }

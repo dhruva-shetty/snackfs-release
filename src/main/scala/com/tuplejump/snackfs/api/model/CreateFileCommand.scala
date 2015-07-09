@@ -76,7 +76,7 @@ object CreateFileCommand extends Command {
               log.error(ex, "Failed to create file %s as a directory with that name exists", filePath)
               throw ex
             }
-          case Failure(e: Exception) =>
+          case Failure(e: Throwable) =>
             val parentPath = filePath.getParent
 
             if (parentPath != null) {

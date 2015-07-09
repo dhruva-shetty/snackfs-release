@@ -25,11 +25,11 @@ import akka.actor.Props
 import akka.pattern.ask
 import akka.util.Timeout
 
-class SnackFSClient(configuration: SnackFSConfiguration) {
+class SnackFSAkkaClient(configuration: SnackFSConfiguration) {
   
   private lazy val log = Logger.get(getClass)
   
-  val system = ActorSystem("SnackFSClient", ConfigFactory.parseString(s"""
+  val system = ActorSystem("SnackFSAkkaClient", ConfigFactory.parseString(s"""
     akka {
       loglevel = "INFO"
       log-dead-letters = off
@@ -59,7 +59,7 @@ class SnackFSClient(configuration: SnackFSConfiguration) {
       case ReadSSTableResponse(data) =>
         var result: InputStream = null
         if(data != null) {
-          if (LogConfiguration.isDebugEnabled) log.debug("blockId: %s, sblockId: %s, fileName: %s, position %s, length %s", blockUUId, subBlockUUId, data.fileName, data.positionToSeek, data.length)
+          if (LogConfiguration.isDebugEnabled) log.debug("blockID: %s, sblockID: %s, fileName: %s, position: %s, length %s", blockUUId, subBlockUUId, data.fileName, data.positionToSeek, data.length)
           if(data.length != 0){
             val raf: RandomAccessFile = new RandomAccessFile(data.fileName, "r")
             result = {
@@ -81,7 +81,7 @@ class SnackFSClient(configuration: SnackFSConfiguration) {
     }
     f onFailure {
       case f =>
-        log.error(f, "Failed to receive server-response for blockId: %s, sblockID: %s", blockUUId, subBlockUUId)
+        log.error(f, "Failed to receive server-response for blockID: %s, sblockID: %s", blockUUId, subBlockUUId)
         prom failure f
     }
     Await.result(prom.future, (10 seconds))
